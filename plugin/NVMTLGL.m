@@ -278,6 +278,17 @@ static BOOL nvmtl_sel1_idle(int *r) { return __atomic_load_n(r, __ATOMIC_ACQUIRE
 - (BOOL)active { return YES; }
 - (NSUInteger)threadgroupMemoryAlignment { return 0; }
 - (NSUInteger)threadgroupMemoryDataSize { return 0; }
+// 10-07 (NM-P0NWBY60, RTX 3050 on driver 1.0.3): Geekbench's OpenCL build still aborted here. The renderer's selector
+// list (AppleMetalOpenGLRenderer, macOS 15.8.1) also names dataType, offset, stride and argumentIndex, which a buffer
+// binding did not answer. A buffer reads as a pointer at offset 0, one element of its own size, at its own index.
+- (MTLDataType)dataType { return _type == MTLBindingTypeBuffer ? MTLDataTypePointer : _dtype; }
+- (NSUInteger)offset { return 0; }
+- (NSUInteger)stride { return _size; }
+- (NSUInteger)argumentIndex { return _index; }
+- (MTLDataType)elementType { return _dtype; }
+- (id)elementStructType { return nil; }
+- (id)elementArrayType { return nil; }
+- (id)elementPointerType { return nil; }
 - (void)doesNotRecognizeSelector:(SEL)s { nvlog("GL: NVMTLGLBinding asked -%s (NOT IMPLEMENTED)", sel_getName(s)); [super doesNotRecognizeSelector:s]; }
 - (NSString *)description { return [NSString stringWithFormat:@"<NVMTLGLBinding %@ type %ld access %ld index %lu size %lu>",
                                      _name, (long)_type, (long)_access, (unsigned long)_index, (unsigned long)_size]; }
@@ -311,6 +322,11 @@ static BOOL nvmtl_sel1_idle(int *r) { return __atomic_load_n(r, __ATOMIC_ACQUIRE
 - (MTLDataType)bufferDataType { return MTLDataTypeNone; }
 - (NSUInteger)threadgroupMemoryAlignment { return 0; }
 - (NSUInteger)threadgroupMemoryDataSize { return 0; }
+// same four getters as NVMTLGLBinding (10-07): a texture is MTLDataTypeTexture at offset 0, at its own index
+- (MTLDataType)dataType { return MTLDataTypeTexture; }
+- (NSUInteger)offset { return 0; }
+- (NSUInteger)stride { return 0; }
+- (NSUInteger)argumentIndex { return _index; }
 - (void)doesNotRecognizeSelector:(SEL)s { nvlog("GL: NVMTLGLTexBinding asked -%s (NOT IMPLEMENTED)", sel_getName(s)); [super doesNotRecognizeSelector:s]; }
 - (NSString *)description { return [NSString stringWithFormat:@"<NVMTLGLTexBinding %@ access %ld index %lu textureType %lu>", _name, (long)_access, (unsigned long)_index, (unsigned long)_ttype]; }
 @end

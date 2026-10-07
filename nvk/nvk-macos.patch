@@ -4597,7 +4597,20 @@ diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --
        image->planes[plane].plane_align_B = plane_align_B;
        image->image_align_B = MAX2(plane_align_B, image->image_align_B);
  
-@@ -1186,6 +1322,15 @@
+@@ -1161,6 +1297,12 @@
+          plane_offset_B = align64(plane_offset_B, plane_align_B);
+          image->planes[plane].plane_offset_B = plane_offset_B;
+          plane_offset_B += image->planes[plane].nil.size_B;
++         /* A plane with a PTE kind is bound through its own VA of align(nil.size_B, plane_align_B) bytes, and the
++          * 64 KB rule above makes that range longer than nil.size_B. Sized without the round-up, binding the image to
++          * memory of exactly the reported size asserted mem_offset_B + range_B <= mem->size_B (RTX 3050, resolution
++          * change). Size the plane like its VA. */
++         if (image->planes[plane].nil.pte_kind && !sparse_bound)
++            plane_offset_B = align64(plane_offset_B, plane_align_B);
+          image->image_size_B = plane_offset_B;
+       }
+    }
+@@ -1186,6 +1328,15 @@
                                    image->image_align_B);
     }
  
@@ -4613,7 +4626,7 @@ diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --
     return VK_SUCCESS;
  }
  
-@@ -1633,7 +1778,11 @@
+@@ -1633,7 +1784,11 @@
     const bool not_shared = !(mem->mem->flags & NVKMD_MEM_SHARED);
  
     if (plane->nil.pte_kind != 0) {
