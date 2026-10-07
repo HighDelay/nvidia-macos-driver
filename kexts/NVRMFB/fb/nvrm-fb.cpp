@@ -105,6 +105,7 @@ class NVRMNVDAFramebuffer : public IOFramebuffer {
     thread_call_t fHwVblCall = nullptr;
     volatile uint64_t fHwVblLast = 0;
     volatile unsigned long long fHwVblCalls = 0;
+    unsigned fModeSetTicks = 0;
     bool fHwVblWanted = false;
     static void hwVblIntr(NvU64 param, NvU64 timestamp);
     static void hwVblDeliver(thread_call_param_t p0, thread_call_param_t);
@@ -1015,11 +1016,18 @@ void NVRMNVDAFramebuffer::vblFire(thread_call_param_t p0, thread_call_param_t)
 {
     NVRMNVDAFramebuffer *me = (NVRMNVDAFramebuffer *)p0;
     if (!me->fVblTimer) return;
-    if (me->fHwVblWanted && !me->fHwVblCb && sFlipLatched[me->fHead] > 0) {
+    // 10-07 (studio, two monitors 75 Hz + 60 Hz): head 1 never latched a pure flip, so its hw vblank was never
+    // registered and its VBL stayed this free-running timer - not locked to the panel's scan-out, so the second screen
+    // jittered while head 0 (real vblank) was smooth. The latch was only a proxy for "this head has a mode": registering
+    // with no mode divided by zero in SetupVBlankRgSemaphoreForApiHead (pixelClock 0). A committed modeset on this head
+    // with a non-zero pixel clock, held for ~1 s of ticks, is that condition stated directly.
+    if (me->fModeSet && !me->fConsoleAperture && me->fMode.timings.pixelClockHz) { if (me->fModeSetTicks < 1000) me->fModeSetTicks++; }
+    else me->fModeSetTicks = 0;
+    if (me->fHwVblWanted && !me->fHwVblCb && (sFlipLatched[me->fHead] > 0 || me->fModeSetTicks >= 60)) {
         me->fHwVblWanted = false;
         me->fHwVblCb = me->fKms->registerVblankIntrCallback(me->fDev, me->fHead, hwVblIntr, (NvU64)(uintptr_t)me);
-        FBLOG("hw vblank on head %u: %s after %d latched flips", me->fHead, me->fHwVblCb ? "REGISTERED" : "REFUSED by NVKMS - timer stays",
-              (int)sFlipLatched[me->fHead]);
+        FBLOG("hw vblank on head %u: %s after %d latched flips, %u mode ticks", me->fHead, me->fHwVblCb ? "REGISTERED" : "REFUSED by NVKMS - timer stays",
+              (int)sFlipLatched[me->fHead], me->fModeSetTicks);
     }
     {   uint64_t nowv = 0; clock_get_uptime(&nowv); const uint64_t per = me->vblPeriodAbs();
         const bool hwLive = me->fHwVblLast && nowv - me->fHwVblLast < 2 * per;
