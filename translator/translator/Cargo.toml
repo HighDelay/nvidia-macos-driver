@@ -1,0 +1,63 @@
+
+[package]
+name = "metal2vulkan"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+license = "LGPL-3.0-or-later"
+authors = ["Anees Iqbal <hello@aneesiqbal.ai>"]
+description = "Translate Metal AIR / LLVM IR to Vulkan SPIR-V with a native Rust emitter"
+readme = "README.md"
+repository = "https://github.com/steelbrain/metal2vulkan"
+homepage = "https://github.com/steelbrain/metal2vulkan"
+documentation = "https://docs.rs/metal2vulkan"
+keywords = ["metal", "air", "spir-v", "vulkan", "gpu"]
+categories = ["compilers", "graphics", "encoding"]
+exclude = [
+    "/.github/",
+    "/docs/",
+    "/scripts/",
+    "/target/",
+    "Cargo.lock",
+    "tests/fixtures/",
+    "m2v-old",
+    "**/*.air",
+    "**/*.metallib",
+    "**/*.mtlb",
+    "**/*.spv",
+    "**/*.spvasm",
+]
+
+[[bin]]
+name = "metal2vulkan"
+path = "src/main.rs"
+required-features = []
+
+[[example]]
+name = "translate_reflected"
+path = "examples/translate_reflected.rs"
+required-features = ["serde"]
+
+[lib]
+name = "metal2vulkan"
+path = "src/lib.rs"
+
+[dependencies]
+spirv = "0.4.0"
+wait-timeout = "0.2"
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
+[features]
+default = []
+serde = ["dep:serde", "dep:serde_json"]
+
+[dev-dependencies]
+serde_json = "1"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[profile.release]
+incremental = true

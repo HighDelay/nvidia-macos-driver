@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'">
+<title>1401</title>
+<link rel="stylesheet" href="guide.css"><link rel="stylesheet" href="app.css">
+</head><body>
+<div class="app" id="top">
+<center class="top">
+<table class="logo" role="presentation" cellspacing="0" cellpadding="0"><tr><td><img class="mark" src="moth-mark.jpg" width="56" height="56" alt=""></td>
+<td class="word"><span class="nm">1401</span> <span class="sy">by NullMoth Systems</span><br><span class="ig">NVIDIA Driver Setup</span> for this Mac</td></tr></table>
+</center>
+<div class="ticker" aria-hidden="true"><span>*** YOUR GEFORCE ON macOS *** NOTHING ABOUT THIS MAC IS SENT ANYWHERE *** EVERY CHANGE IS BACKED UP FIRST *** A WAY BACK IS ALWAYS IN THE BOOT PICKER *** FREE FOREVER ***</span></div>
+
+<p class="tabs"><button type="button" class="b tab on" data-t="drv">NVIDIA driver</button> <button type="button" class="b tab" data-t="usb">USB ports</button> <button type="button" class="b tab" data-t="crash">Crash report</button></p>
+<div id="t-drv">
+<p class="panel">Works on any OpenCore setup running macOS 15, whether 1401 built it or you did. <b>Keep the USB stick or disk OpenCore started this Mac from plugged in</b>: 1401 changes the settings on that one. This driver is new and may not work on every PC; if your setup is not booting yet, start with the <a href="#" id="ocg">OpenCore Install Guide</a>.</p>
+<table class="pc" border="1" cellspacing="2" cellpadding="3"><caption>This Mac:</caption><tbody id="mac"><tr><th>Looking...</th><td>one second</td></tr></tbody></table>
+
+<div id="verdict" class="panel"></div>
+
+<div id="steps" class="panel" hidden>
+<p class="sh">What happens</p>
+<ol class="todo">
+<li id="s1"><b>Get the driver.</b> <span id="s1t"></span> <button type="button" class="b" id="dl" hidden>Download it</button> <span id="dlp"></span></li>
+<li id="s2"><b>Look before touching anything.</b> 1401 reads your OpenCore config and lists every change it would make. Nothing is changed. (macOS asks for your password.) <button type="button" class="b" id="dry" disabled>Show me the changes</button></li>
+<li id="s3"><b>Install.</b> Backs up your OpenCore config, makes exactly the changes listed, installs the driver, and adds <i>1401: Remove NVIDIA driver</i> to your boot picker. <button type="button" class="b" id="go" disabled>Install the driver</button></li>
+<li id="s4"><b>Restart.</b> If macOS says a system extension was blocked, open <a href="#" id="priv">Privacy &amp; Security</a>, click Allow, and restart once more. <button type="button" class="b" id="rs" disabled>Restart now</button></li>
+</ol>
+<p id="efirow" hidden>More than one OpenCore partition was found. Use: <select id="efi"></select></p>
+</div>
+
+<div id="logwrap" hidden><p class="sh">What 1401 is doing</p><pre id="log" aria-live="polite"></pre>
+<p class="small"><a href="#" id="logs">Open the log folder</a></p></div>
+
+<div class="panel"><p class="sh">If something goes wrong after you restart</p>
+<p>Restart, and in the OpenCore boot picker choose <b>1401: Remove NVIDIA driver</b>, then your macOS disk. 1401 removes the driver by itself and restarts; this Mac comes back exactly as it was before the install, OpenCore config included. The screen may stay dark until that second restart.</p>
+<p><button type="button" class="b" id="rm">Remove the driver</button></p></div>
+<div class="panel"><p class="sh">Startup text (verbose mode)</p>
+<p>Shows what macOS is doing while it starts instead of the Apple logo. Useful if a start hangs. Takes effect at the next restart.</p>
+<p><button type="button" class="b" id="vbon">Turn verbose on</button> <button type="button" class="b" id="vboff">Turn verbose off</button></p></div>
+
+</div>
+
+<div id="t-usb" hidden>
+<div class="panel"><p class="sh">Map your USB ports</p>
+<p>macOS only uses 15 ports per USB controller and has no idea which ones your case actually has. 1401 watches the ports while you plug things in, then writes a map so every port you use just works.</p>
+<ol class="todo">
+<li><b>Start watching.</b> <button type="button" class="b" id="uw">Start</button></li>
+<li><b>Plug something into each port you use, one at a time</b> &mdash; a USB 3 stick is best, and do each USB-C port both ways round. A port turns <span class="good">green</span> when 1401 sees it. Ports that already have something plugged in count too.</li>
+<li><b>Check the list</b>, pick the plug type for each port, and click <button type="button" class="b" id="uwr">Write the map</button> (macOS asks for your password; your OpenCore config is backed up first).</li>
+</ol>
+<p id="uerr" class="bad"></p></div>
+<div id="ports"></div>
+</div>
+
+<div id="t-crash" hidden>
+<div class="panel"><p class="sh">Crash report</p>
+<p>If the NVIDIA driver ever crashes this Mac, 1401 asks the next time you log in whether to make a report. You can also make one here.</p>
+<p>The report is a text file on your Desktop with your hardware (CPU, graphics, memory, macOS version) and what failed. 1401 takes out your name, your Mac's name, serial numbers, network addresses and file paths. Read it, then upload it on the NullMoth site if you want to. <b>1401 never sends anything by itself.</b></p>
+<p id="cr"></p>
+<p><button type="button" class="b" id="mk">Make a report</button> <button type="button" class="b" id="up">Open the upload page</button></p></div>
+</div>
+
+<center class="foot">
+<hr width="80%">
+<p class="badges" aria-hidden="true"><span class="bd bd1">1401</span><span class="bd bd2">MADE FOR<br>macOS 15</span><span class="bd bd3">NO COOKIES<br>NO TRACKING</span><span class="bd bd4">FREE<br>FOREVER</span></p>
+<p class="counter">You are visitor number <b>000001</b> (it's only ever you &mdash; nothing here leaves this Mac)</p>
+<p>Driver <span id="ver"></span> &middot; <a href="#" id="src">source code</a><br>© 2026 NullMoth Systems<br>NullMoth and the moth logo are trademarks of NullMoth Systems.</p>
+</center>
+</div>
+<script src="app.js"></script>
+</body></html>

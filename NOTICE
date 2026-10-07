@@ -1,0 +1,14 @@
+NullMoth NVIDIA Metal driver — third-party components
+
+translator/  Based on metal2vulkan, Copyright (C) Anees Iqbal
+             https://github.com/steelbrain/metal2vulkan
+             Licensed under the GNU Lesser General Public License v3.0 or later
+             (translator/LICENSE, translator/COPYING). Modifications by NullMoth Systems
+             are released under the same licence.
+
+kexts/       Builds against NVIDIA's open GPU kernel modules (r610), MIT/GPL-2.0,
+             https://github.com/NVIDIA/open-gpu-kernel-modules
+
+NVK          Vulkan driver from Mesa (MIT). NullMoth's changes ship as patches.
+
+GSP firmware Redistributed unmodified under NVIDIA's firmware licence.

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key><string>English</string>
+	<key>CFBundleExecutable</key><string>NVRMFB</string>
+	<key>CFBundleIdentifier</key><string>com.nullmoth.NVRMFB</string>
+	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+	<key>CFBundleName</key><string>NVRMFB</string>
+	<key>CFBundlePackageType</key><string>KEXT</string>
+	<key>CFBundleShortVersionString</key><string>0.1</string>
+	<key>CFBundleVersion</key><string>0.1</string>
+	<key>OSBundleLibraries</key>
+	<dict>
+		<key>com.apple.iokit.IOGraphicsFamily</key><string>1.0.0b1</string>
+		<key>com.apple.kpi.iokit</key><string>8.0</string>
+		<key>com.apple.kpi.libkern</key><string>8.0</string>
+		<key>com.apple.kpi.mach</key><string>8.0</string>
+		<key>com.apple.kpi.bsd</key><string>8.0</string>
+	</dict>
+	<key>IOKitPersonalities</key>
+	<dict>
+		<key>NVRMFB</key>
+		<dict>
+			<key>CFBundleIdentifier</key><string>com.nullmoth.NVRMFB</string>
+			<key>IOClass</key><string>NVRMNVDAFramebuffer</string>
+			<key>IOProviderClass</key><string>NVRMDisplay</string>
+			<key>IOProbeScore</key><integer>1000</integer>
+		</dict>
+		<!-- Retires Apple's IONDRVFramebuffer (.Display_boot, probe 20000) so only ONE
+		     framebuffer publishes BAR1+0. With two of them the blank extended desktop
+		     overwrote the real one in the same physical memory.-->
+		<key>NVRMFBClaim</key>
+		<dict>
+			<key>CFBundleIdentifier</key><string>com.nullmoth.NVRMFB</string>
+			<key>IOClass</key><string>NVRMFBClaim</string>
+			<key>IOProviderClass</key><string>IOPCIDevice</string>
+			<key>IONameMatch</key><string>display</string>
+			<key>IOMatchCategory</key><string>IOFramebuffer</string>
+			<key>IOProbeScore</key><integer>30000</integer>
+		</dict>
+	</dict>
+</dict>
+</plist>

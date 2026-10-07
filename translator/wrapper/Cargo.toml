@@ -1,0 +1,13 @@
+[package]
+name = "nvmtl_translate"
+version = "0.1.0"
+edition = "2021"
+[lib]
+crate-type = ["cdylib"]
+[dependencies]
+metal2vulkan = { path = "../translator", features = ["serde"] }
+serde_json = "1"
+rspirv = "0.13"
+
+[dev-dependencies]
+spirv-tools = "0.13.3"

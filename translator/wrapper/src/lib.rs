@@ -1,0 +1,653 @@
+use metal2vulkan::passes::Stage;
+use std::ffi::CStr;
+use std::os::raw::c_char;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+static CAPS: AtomicU32 = AtomicU32::new(0);
+#[no_mangle]
+pub extern "C" fn nvmtl_translate_set_caps(caps: u32) { CAPS.store(caps, Ordering::Relaxed); }
+
+const NVMTL_TG_MAX: usize = 32;
+thread_local! {
+    static TG_LEN: std::cell::RefCell<[u32; NVMTL_TG_MAX]> = const {
+        std::cell::RefCell::new([0; NVMTL_TG_MAX])
+    };
+}
+
+#[no_mangle]
+pub extern "C" fn nvmtl_translate_set_threadgroup_lengths(lens: *const u32, count: u32) {
+    let n = if lens.is_null() { 0 } else { (count as usize).min(NVMTL_TG_MAX) };
+    TG_LEN.with(|storage| {
+        let mut lengths = storage.borrow_mut();
+        lengths.fill(0);
+        for i in 0..n {
+            lengths[i] = unsafe { *lens.add(i) };
+        }
+    });
+}
+
+fn threadgroup_lengths() -> Vec<(u32, u32)> {
+    TG_LEN.with(|storage| {
+        storage.borrow().iter().enumerate()
+            .filter_map(|(i, &v)| (v != 0).then_some((i as u32, v)))
+            .collect()
+    })
+}
+
+fn apply_tg(mut o: metal2vulkan::passes::TransformOptions) -> metal2vulkan::passes::TransformOptions {
+    for (index, length) in threadgroup_lengths() {
+        match o.with_threadgroup_memory_length(index, length) {
+            Ok(next) => o = next,
+            Err(e) => { eprintln!("nvmtl_translate: threadgroup index {index} length {length} refused: {e}"); break; }
+        }
+    }
+    o
+}
+
+fn formatless_options(ll: &str, st: Stage, caps: u32) -> Option<metal2vulkan::passes::TransformOptions> {
+    use metal2vulkan::reflect::{ResourceAccess as A, ResourceKind as K};
+    let refl = metal2vulkan::reflect_sanitized(ll, st, metal2vulkan::passes::TransformOptions::default()).ok()?;
+    let mut idx: Vec<usize> = refl.bindings.iter().filter(|b| {
+        (b.kind == K::StorageImage || (matches!(b.kind, K::TextureArray | K::EmbeddedArgBufferTexture) && b.access == Some(A::Storage)))
+            && b.texture_shape.as_ref().is_some_and(|t| matches!(t.component, metal2vulkan::meta::TextureComponent::Float))
+    }).filter_map(|b| usize::try_from(b.metal_index).ok()).collect();
+    idx.sort_unstable(); idx.dedup();
+    if idx.is_empty() { return None; }
+    use metal2vulkan::reflect::{RuntimeStorageImageCapabilities as C, RuntimeStorageImageFormat as F, RuntimeStorageImageState as S};
+    let mut o = metal2vulkan::passes::TransformOptions::default();
+    let state = S { format: F::Bgra8Unorm, capabilities: C { storage_image: true, storage_image_atomic: false,
+        read_without_format: caps & 1 != 0, write_without_format: caps & 2 != 0 } };
+    for i in idx { if let Some(s) = o.runtime_storage_image_states.get_mut(i) { *s = Some(state); } }
+    Some(o)
+}
+fn translate_one(ll: &str, st: Stage) -> Result<Vec<u8>, String> {
+    let caps = CAPS.load(Ordering::Relaxed);
+    if let Some(o) = if caps != 0 { formatless_options(ll, st, caps) } else { None } {
+        match metal2vulkan::translate_native_no_retry_constructed_with_options(ll, st, apply_tg(o)) {
+            Ok(v) => return Ok(v),
+            Err(e) => eprintln!("nvmtl_translate: formatless storage images refused, falling back: {e}"),
+        }
+    }
+    metal2vulkan::translate_native_no_retry_constructed_with_options(ll, st, apply_tg(metal2vulkan::passes::TransformOptions::default()))
+}
+
+#[no_mangle]
+pub extern "C" fn nvmtl_translate(
+    ll: *const c_char, stage: *const c_char, out: *mut *mut u8, out_len: *mut usize,
+    err: *mut c_char, err_len: usize,
+) -> i32 {
+    let set_err = |msg: &str| unsafe {
+        if !err.is_null() && err_len > 0 {
+            let b = msg.as_bytes();
+            let n = b.len().min(err_len - 1);
+            std::ptr::copy_nonoverlapping(b.as_ptr(), err as *mut u8, n);
+            *err.add(n) = 0;
+        }
+    };
+    if ll.is_null() || stage.is_null() || out.is_null() || out_len.is_null() { return -1; }
+    let ll = match unsafe { CStr::from_ptr(ll) }.to_str() { Ok(s) => s, Err(_) => { set_err("ll is not utf-8"); return -1; } };
+    let st = match unsafe { CStr::from_ptr(stage) }.to_str() {
+        Ok("vertex") => Stage::Vertex, Ok("fragment") => Stage::Fragment, Ok("kernel") => Stage::Kernel,
+        _ => { set_err("stage must be vertex|fragment|kernel"); return -1; }
+    };
+    match translate_one(ll, st) {
+        Ok(spv) => {
+            let mut b = spv.into_boxed_slice();
+            unsafe { *out = b.as_mut_ptr(); *out_len = b.len(); }
+            std::mem::forget(b);
+            0
+        }
+        Err(e) => { set_err(&e); -1 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn nvmtl_translate_free(p: *mut u8, len: usize) {
+    if !p.is_null() { unsafe { drop(Box::from_raw(std::slice::from_raw_parts_mut(p, len))); } }
+}
+
+#[no_mangle]
+pub extern "C" fn nvmtl_visible_refs(
+    ll: *const c_char, out: *mut *mut u8, out_len: *mut usize, err: *mut c_char, err_len: usize,
+) -> i32 {
+    let set_err = |msg: &str| unsafe {
+        if !err.is_null() && err_len > 0 {
+            let b = msg.as_bytes();
+            let k = b.len().min(err_len - 1);
+            std::ptr::copy_nonoverlapping(b.as_ptr(), err as *mut u8, k);
+            *err.add(k) = 0;
+        }
+    };
+    if ll.is_null() || out.is_null() || out_len.is_null() { return -1; }
+    let ll = match unsafe { CStr::from_ptr(ll) }.to_str() { Ok(s) => s, Err(_) => { set_err("ll is not utf-8"); return -1; } };
+    let syms = match metal2vulkan::linked_functions::visible_function_reference_symbols(ll) {
+        Ok(v) => v, Err(e) => { set_err(&e); return -1; }
+    };
+    let json = match serde_json::to_vec(&syms) { Ok(v) => v, Err(e) => { set_err(&e.to_string()); return -1; } };
+    let mut b = json.into_boxed_slice();
+    unsafe { *out = b.as_mut_ptr(); *out_len = b.len(); }
+    std::mem::forget(b);
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn nvmtl_link_visible(
+    ll: *const c_char, stage: *const c_char,
+    syms: *const *const c_char, mods: *const *const c_char, n: usize,
+    out: *mut *mut u8, out_len: *mut usize, err: *mut c_char, err_len: usize,
+) -> i32 {
+    let set_err = |msg: &str| unsafe {
+        if !err.is_null() && err_len > 0 {
+            let b = msg.as_bytes();
+            let k = b.len().min(err_len - 1);
+            std::ptr::copy_nonoverlapping(b.as_ptr(), err as *mut u8, k);
+            *err.add(k) = 0;
+        }
+    };
+    if ll.is_null() || stage.is_null() || out.is_null() || out_len.is_null() { return -1; }
+    if n > 0 && (syms.is_null() || mods.is_null()) { return -1; }
+    let ll = match unsafe { CStr::from_ptr(ll) }.to_str() { Ok(s) => s, Err(_) => { set_err("ll is not utf-8"); return -1; } };
+    let st = match unsafe { CStr::from_ptr(stage) }.to_str() {
+        Ok("vertex") => Stage::Vertex, Ok("fragment") => Stage::Fragment, Ok("kernel") => Stage::Kernel,
+        _ => { set_err("stage must be vertex|fragment|kernel"); return -1; }
+    };
+    let mut linkage = metal2vulkan::linked_functions::LinkedFunctionLinkage::default();
+    for i in 0..n {
+        let (sp, mp) = unsafe { (*syms.add(i), *mods.add(i)) };
+        if sp.is_null() || mp.is_null() { set_err("null symbol or module"); return -1; }
+        let symbol = match unsafe { CStr::from_ptr(sp) }.to_str() { Ok(s) => s.to_string(), Err(_) => { set_err("symbol is not utf-8"); return -1; } };
+        let module_ll = match unsafe { CStr::from_ptr(mp) }.to_str() { Ok(s) => s.to_string(), Err(_) => { set_err("module is not utf-8"); return -1; } };
+        linkage.visible_references.push(metal2vulkan::linked_functions::LinkedFunctionReference { symbol, module_ll });
+    }
+    let linked = match metal2vulkan::specialize_linked_module(ll, st, &linkage) {
+        Ok(v) => v, Err(e) => { set_err(&format!("link: {e}")); return -1; }
+    };
+    let mut v = linked.into_bytes(); v.push(0);
+    let mut b = v.into_boxed_slice();
+    unsafe { *out = b.as_mut_ptr(); *out_len = b.len(); }
+    std::mem::forget(b);
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn nvmtl_link_externs(
+    ll: *const c_char, mods: *const *const c_char, n: usize,
+    out: *mut *mut u8, out_len: *mut usize, err: *mut c_char, err_len: usize,
+) -> i32 {
+    let set_err = |msg: &str| unsafe {
+        if !err.is_null() && err_len > 0 {
+            let b = msg.as_bytes();
+            let k = b.len().min(err_len - 1);
+            std::ptr::copy_nonoverlapping(b.as_ptr(), err as *mut u8, k);
+            *err.add(k) = 0;
+        }
+    };
+    if ll.is_null() || out.is_null() || out_len.is_null() || (n > 0 && mods.is_null()) { return -1; }
+    let ll = match unsafe { CStr::from_ptr(ll) }.to_str() { Ok(s) => s, Err(_) => { set_err("ll is not utf-8"); return -1; } };
+    let mut modules = Vec::with_capacity(n);
+    for i in 0..n {
+        let mp = unsafe { *mods.add(i) };
+        if mp.is_null() { set_err("null module"); return -1; }
+        match unsafe { CStr::from_ptr(mp) }.to_str() { Ok(s) => modules.push(s.to_string()), Err(_) => { set_err("module is not utf-8"); return -1; } }
+    }
+    let linked = match metal2vulkan::linked_functions::link_extern_definitions(ll, &modules) {
+        Ok(v) => v, Err(e) => { set_err(&format!("extern link: {e}")); return -1; }
+    };
+    let mut v = linked.into_bytes(); v.push(0);
+    let mut b = v.into_boxed_slice();
+    unsafe { *out = b.as_mut_ptr(); *out_len = b.len(); }
+    std::mem::forget(b);
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn nvmtl_lower_mesh(
+    ll: *const c_char, entry: *const c_char,
+    out_k: *mut *mut u8, out_k_len: *mut usize, out_v: *mut *mut u8, out_v_len: *mut usize,
+    layout: *mut u32, err: *mut c_char, err_len: usize,
+) -> i32 {
+    let set_err = |msg: &str| unsafe {
+        if !err.is_null() && err_len > 0 {
+            let b = msg.as_bytes();
+            let k = b.len().min(err_len - 1);
+            std::ptr::copy_nonoverlapping(b.as_ptr(), err as *mut u8, k);
+            *err.add(k) = 0;
+        }
+    };
+    if ll.is_null() || entry.is_null() || out_k.is_null() || out_k_len.is_null() || out_v.is_null() || out_v_len.is_null() || layout.is_null() { return -1; }
+    let ll = match unsafe { CStr::from_ptr(ll) }.to_str() { Ok(s) => s, Err(_) => { set_err("ll is not utf-8"); return -1; } };
+    let entry = match unsafe { CStr::from_ptr(entry) }.to_str() { Ok(s) => s, Err(_) => { set_err("entry is not utf-8"); return -1; } };
+    let m = match metal2vulkan::mesh_lower::lower_mesh(ll, entry) { Ok(m) => m, Err(e) => { set_err(&e); return -1; } };
+    let give = |text: String, o: *mut *mut u8, ol: *mut usize| {
+        let mut v = text.into_bytes(); v.push(0);
+        let mut b = v.into_boxed_slice();
+        unsafe { *o = b.as_mut_ptr(); *ol = b.len(); }
+        std::mem::forget(b);
+    };
+    let l = &m.layout;
+    for (i, x) in [l.nv, l.np, l.k, l.vs, l.ps, l.idx_off, l.block].into_iter().enumerate() { unsafe { *layout.add(i) = x; } }
+    give(m.kernel_ll, out_k, out_k_len);
+    give(m.vertex_ll, out_v, out_v_len);
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn nvmtl_lower_mesh2(
+    obj_ll: *const c_char, obj_entry: *const c_char, ll: *const c_char, entry: *const c_char,
+    mode: u32, cap: u32,
+    out_o: *mut *mut u8, out_o_len: *mut usize,
+    out_k: *mut *mut u8, out_k_len: *mut usize, out_v: *mut *mut u8, out_v_len: *mut usize,
+    layout: *mut u32, err: *mut c_char, err_len: usize,
+) -> i32 {
+    use metal2vulkan::mesh_lower::*;
+    let set_err = |msg: &str| unsafe {
+        if !err.is_null() && err_len > 0 {
+            let b = msg.as_bytes();
+            let k = b.len().min(err_len - 1);
+            std::ptr::copy_nonoverlapping(b.as_ptr(), err as *mut u8, k);
+            *err.add(k) = 0;
+        }
+    };
+    if ll.is_null() || entry.is_null() || out_k.is_null() || out_k_len.is_null() || out_v.is_null() || out_v_len.is_null() || layout.is_null() { return -1; }
+    let text = |p: *const c_char, what: &str| -> Result<String, String> {
+        if p.is_null() { return Err(format!("{what} is null")); }
+        unsafe { CStr::from_ptr(p) }.to_str().map(|s| s.to_string()).map_err(|_| format!("{what} is not utf-8"))
+    };
+    let ll = match text(ll, "ll") { Ok(s) => s, Err(e) => { set_err(&e); return -1; } };
+    let entry = match text(entry, "entry") { Ok(s) => s, Err(e) => { set_err(&e); return -1; } };
+    let link = match mode { 0 => Link::Direct, 1 => Link::Object, 2 => Link::Indirect, _ => { set_err("mode must be 0|1|2"); return -1; } };
+    if link != Link::Direct && cap == 0 { set_err("a linked mesh needs a threadgroup cap > 0"); return -1; }
+    let mut obj: Option<(String, String)> = None;
+    let rs = match link {
+        Link::Direct => 0,
+        Link::Indirect => {
+            match payload_len(&ll, &entry) { Ok(0) => {}, Ok(n) => { set_err(&format!("mesh {entry} reads a {n}-byte payload but is drawn without an object stage")); return -1; }, Err(e) => { set_err(&e); return -1; } }
+            record_stride(0)
+        }
+        Link::Object => {
+            if out_o.is_null() || out_o_len.is_null() { return -1; }
+            let ol = match text(obj_ll, "obj_ll") { Ok(s) => s, Err(e) => { set_err(&e); return -1; } };
+            let oe = match text(obj_entry, "obj_entry") { Ok(s) => s, Err(e) => { set_err(&e); return -1; } };
+            let op = match payload_len(&ol, &oe) { Ok(n) => n, Err(e) => { set_err(&e); return -1; } };
+            let mp = match payload_len(&ll, &entry) { Ok(n) => n, Err(e) => { set_err(&e); return -1; } };
+            if mp > op { set_err(&format!("mesh {entry} reads a {mp}-byte payload but object {oe} declares {op}")); return -1; }
+            obj = Some((ol, oe));
+            record_stride(op)
+        }
+    };
+    let m = match lower_mesh_linked(&ll, &entry, link, rs, cap) { Ok(m) => m, Err(e) => { set_err(&e); return -1; } };
+    let o_text = match &obj {
+        Some((ol, oe)) => match lower_object(ol, oe, &m.layout, m.tr, rs) { Ok(t) => Some(t), Err(e) => { set_err(&e); return -1; } },
+        None => None,
+    };
+    let give = |text: String, o: *mut *mut u8, ol: *mut usize| {
+        let mut v = text.into_bytes(); v.push(0);
+        let mut b = v.into_boxed_slice();
+        unsafe { *o = b.as_mut_ptr(); *ol = b.len(); }
+        std::mem::forget(b);
+    };
+    let l = &m.layout;
+    for (i, x) in [l.nv, l.np, l.k, l.vs, l.ps, l.idx_off, l.block, m.tr, rs].into_iter().enumerate() { unsafe { *layout.add(i) = x; } }
+    if let Some(t) = o_text { give(t, out_o, out_o_len); }
+    give(m.kernel_ll, out_k, out_k_len);
+    give(m.vertex_ll, out_v, out_v_len);
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn nvmtl_link_runtime(
+    ll: *const c_char, stage: *const c_char,
+    refs: *const *const c_char, ref_mods: *const *const c_char, nref: usize,
+    cands: *const *const c_char, cand_mods: *const *const c_char, ncand: usize,
+    out: *mut *mut u8, out_len: *mut usize, err: *mut c_char, err_len: usize,
+) -> i32 {
+    let set_err = |msg: &str| unsafe {
+        if !err.is_null() && err_len > 0 {
+            let b = msg.as_bytes();
+            let k = b.len().min(err_len - 1);
+            std::ptr::copy_nonoverlapping(b.as_ptr(), err as *mut u8, k);
+            *err.add(k) = 0;
+        }
+    };
+    if ll.is_null() || stage.is_null() || out.is_null() || out_len.is_null() { return -1; }
+    if (nref > 0 && (refs.is_null() || ref_mods.is_null())) || (ncand > 0 && (cands.is_null() || cand_mods.is_null())) { return -1; }
+    let ll = match unsafe { CStr::from_ptr(ll) }.to_str() { Ok(s) => s, Err(_) => { set_err("ll is not utf-8"); return -1; } };
+    let st = match unsafe { CStr::from_ptr(stage) }.to_str() {
+        Ok("vertex") => Stage::Vertex, Ok("fragment") => Stage::Fragment, Ok("kernel") => Stage::Kernel,
+        _ => { set_err("stage must be vertex|fragment|kernel"); return -1; }
+    };
+    let pair = |a: *const *const c_char, b: *const *const c_char, i: usize| -> Result<(String, String), String> {
+        let (sp, mp) = unsafe { (*a.add(i), *b.add(i)) };
+        if sp.is_null() || mp.is_null() { return Err("null symbol or module".into()); }
+        let s = unsafe { CStr::from_ptr(sp) }.to_str().map_err(|_| "symbol is not utf-8".to_string())?.to_string();
+        let m = unsafe { CStr::from_ptr(mp) }.to_str().map_err(|_| "module is not utf-8".to_string())?.to_string();
+        Ok((s, m))
+    };
+    let mut references = Vec::with_capacity(nref);
+    for i in 0..nref {
+        match pair(refs, ref_mods, i) {
+            Ok((symbol, module_ll)) => references.push(metal2vulkan::linked_functions::LinkedFunctionReference { symbol, module_ll }),
+            Err(e) => { set_err(&e); return -1; }
+        }
+    }
+    let mut candidates = Vec::with_capacity(ncand);
+    for i in 0..ncand {
+        match pair(cands, cand_mods, i) { Ok(p) => candidates.push(p), Err(e) => { set_err(&e); return -1; } }
+    }
+    let linked = match metal2vulkan::specialize_runtime_table_module(ll, st, references, &candidates) {
+        Ok(v) => v, Err(e) => { set_err(&format!("runtime-table link: {e}")); return -1; }
+    };
+    let mut v = linked.into_bytes(); v.push(0);
+    let mut b = v.into_boxed_slice();
+    unsafe { *out = b.as_mut_ptr(); *out_len = b.len(); }
+    std::mem::forget(b);
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn nvmtl_translate_fc(
+    ll: *const c_char, stage: *const c_char,
+    indices: *const u32, sizes: *const u32, payloads: *const *const u8, n: usize,
+    out: *mut *mut u8, out_len: *mut usize,
+    err: *mut c_char, err_len: usize,
+) -> i32 {
+    let set_err = |msg: &str| unsafe {
+        if !err.is_null() && err_len > 0 {
+            let b = msg.as_bytes();
+            let k = b.len().min(err_len - 1);
+            std::ptr::copy_nonoverlapping(b.as_ptr(), err as *mut u8, k);
+            *err.add(k) = 0;
+        }
+    };
+    if ll.is_null() || stage.is_null() || out.is_null() || out_len.is_null() { return -1; }
+    if n > 0 && (indices.is_null() || sizes.is_null() || payloads.is_null()) { return -1; }
+    let ll = match unsafe { CStr::from_ptr(ll) }.to_str() { Ok(s) => s, Err(_) => { set_err("ll is not utf-8"); return -1; } };
+    let st = match unsafe { CStr::from_ptr(stage) }.to_str() {
+        Ok("vertex") => Stage::Vertex, Ok("fragment") => Stage::Fragment, Ok("kernel") => Stage::Kernel,
+        _ => { set_err("stage must be vertex|fragment|kernel"); return -1; }
+    };
+    let mut values: Vec<(u32, Vec<u8>)> = Vec::with_capacity(n);
+    for i in 0..n {
+        let idx = unsafe { *indices.add(i) };
+        let len = unsafe { *sizes.add(i) } as usize;
+        let ptr = unsafe { *payloads.add(i) };
+        if ptr.is_null() { set_err("null payload"); return -1; }
+        values.push((idx, unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec()));
+    }
+    let specialized = match metal2vulkan::specialize_air_function_constants(ll, &values) {
+        Ok(v) => v,
+        Err(e) => { set_err(&format!("AIR specialization: {e}")); return -1; }
+    };
+    match translate_one(specialized.as_ref(), st) {
+        Ok(spv) => {
+            let mut b = spv.into_boxed_slice();
+            unsafe { *out = b.as_mut_ptr(); *out_len = b.len(); }
+            std::mem::forget(b);
+            0
+        }
+        Err(e) => { set_err(&e); -1 }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn nvmtl_reflect(
+    ll: *const c_char, stage: *const c_char,
+    out: *mut *mut u8, out_len: *mut usize,
+    err: *mut c_char, err_len: usize,
+) -> i32 {
+    let set_err = |msg: &str| unsafe {
+        if !err.is_null() && err_len > 0 {
+            let b = msg.as_bytes();
+            let k = b.len().min(err_len - 1);
+            std::ptr::copy_nonoverlapping(b.as_ptr(), err as *mut u8, k);
+            *err.add(k) = 0;
+        }
+    };
+    if ll.is_null() || stage.is_null() || out.is_null() || out_len.is_null() { return -1; }
+    let ll = match unsafe { CStr::from_ptr(ll) }.to_str() { Ok(s) => s, Err(_) => { set_err("ll is not utf-8"); return -1; } };
+    let st = match unsafe { CStr::from_ptr(stage) }.to_str() {
+        Ok("vertex") => Stage::Vertex, Ok("fragment") => Stage::Fragment, Ok("kernel") => Stage::Kernel,
+        _ => { set_err("stage must be vertex|fragment|kernel"); return -1; }
+    };
+    let refl = match metal2vulkan::reflect_sanitized(ll, st, metal2vulkan::passes::TransformOptions::default()) {
+        Ok(r) => r,
+        Err(e) => { set_err(&e); return -1; }
+    };
+    let json = match serde_json::to_vec(&refl) { Ok(v) => v, Err(e) => { set_err(&e.to_string()); return -1; } };
+    let mut b = json.into_boxed_slice();
+    unsafe { *out = b.as_mut_ptr(); *out_len = b.len(); }
+    std::mem::forget(b);
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn nvmtl_reflect_fc(
+    ll: *const c_char, stage: *const c_char,
+    indices: *const u32, sizes: *const u32, payloads: *const *const u8, n: usize,
+    out: *mut *mut u8, out_len: *mut usize,
+    err: *mut c_char, err_len: usize,
+) -> i32 {
+    let set_err = |msg: &str| unsafe {
+        if !err.is_null() && err_len > 0 {
+            let b = msg.as_bytes();
+            let k = b.len().min(err_len - 1);
+            std::ptr::copy_nonoverlapping(b.as_ptr(), err as *mut u8, k);
+            *err.add(k) = 0;
+        }
+    };
+    if ll.is_null() || stage.is_null() || out.is_null() || out_len.is_null() { return -1; }
+    if n > 0 && (indices.is_null() || sizes.is_null() || payloads.is_null()) { return -1; }
+    let ll = match unsafe { CStr::from_ptr(ll) }.to_str() { Ok(s) => s, Err(_) => { set_err("ll is not utf-8"); return -1; } };
+    let st = match unsafe { CStr::from_ptr(stage) }.to_str() {
+        Ok("vertex") => Stage::Vertex, Ok("fragment") => Stage::Fragment, Ok("kernel") => Stage::Kernel,
+        _ => { set_err("stage must be vertex|fragment|kernel"); return -1; }
+    };
+    let mut values: Vec<(u32, Vec<u8>)> = Vec::with_capacity(n);
+    for i in 0..n {
+        let idx = unsafe { *indices.add(i) };
+        let len = unsafe { *sizes.add(i) } as usize;
+        let ptr = unsafe { *payloads.add(i) };
+        if ptr.is_null() { set_err("null payload"); return -1; }
+        values.push((idx, unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec()));
+    }
+    let specialized = match metal2vulkan::specialize_air_function_constants(ll, &values) {
+        Ok(v) => v,
+        Err(e) => { set_err(&format!("AIR specialization: {e}")); return -1; }
+    };
+    let refl = match metal2vulkan::reflect_sanitized(specialized.as_ref(), st, metal2vulkan::passes::TransformOptions::default()) {
+        Ok(r) => r,
+        Err(e) => { set_err(&e); return -1; }
+    };
+    let json = match serde_json::to_vec(&refl) { Ok(v) => v, Err(e) => { set_err(&e.to_string()); return -1; } };
+    let mut b = json.into_boxed_slice();
+    unsafe { *out = b.as_mut_ptr(); *out_len = b.len(); }
+    std::mem::forget(b);
+    0
+}
+
+mod buffer_addresses;
+mod wide_loads;
+mod align_guard;
+mod table_ubo;
+mod g2_inline;
+mod linearize;
+
+#[cfg(test)]
+mod storage_caps_tests {
+    use super::*;
+    use spirv_tools::val::Validator;
+    #[test] #[ignore] fn corpus_formatless_storage_images() {
+        use std::collections::BTreeMap;
+        let check=|b:&[u8]|->Result<(),String>{ let w:Vec<u32>=b.chunks_exact(4).map(|w|u32::from_le_bytes(w.try_into().unwrap())).collect();
+            spirv_tools::val::create(Some(spirv_tools::TargetEnv::Vulkan_1_2)).validate(&w,None).map_err(|e|e.to_string()) };
+        let mut files:Vec<_>=std::fs::read_dir("/Library/GPUBundles/nvmtl/aircache").unwrap().filter_map(|e|e.ok()).map(|e|e.path()).collect(); files.sort();
+        let t0=std::time::Instant::now();
+        let mut nostex=0; let (mut units,mut same,mut differ_ok,mut differ_bad,mut differ_wasbad,mut refused,mut rescued,mut both_err)=(0,0,0,0,0,0,0,0);
+        let mut why:BTreeMap<String,(u32,String)>=BTreeMap::new();
+        for f in files.iter().step_by(4) {
+            if t0.elapsed().as_secs()>480 { println!("STOPPED EARLY at the 480 s cap"); break; }
+            let ll=match std::fs::read_to_string(f){Ok(s)=>s,Err(_)=>continue};
+            for (tag,st) in [("!air.vertex =",Stage::Vertex),("!air.fragment =",Stage::Fragment),("!air.kernel =",Stage::Kernel)] {
+                if !ll.contains(tag) { continue; }
+                units+=1;
+                let old=metal2vulkan::translate_native_no_retry(&ll,st);
+                let Some(o)=formatless_options(&ll,st,3) else { nostex+=1; continue; };
+                let new=metal2vulkan::translate_native_no_retry_with_options(&ll,st,o);
+                match (old,new) {
+                    (Err(_),Err(_))=>both_err+=1,
+                    (Err(_),Ok(_))=>rescued+=1,
+                    (Ok(_),Err(e))=>{ refused+=1; let k:String=e.chars().filter(|c|!c.is_ascii_digit()).take(120).collect();
+                        let v=why.entry(k).or_insert((0,f.file_name().unwrap().to_string_lossy().into())); v.0+=1; }
+                    (Ok(a),Ok(b))=>{ if a==b { same+=1; } else { match (check(&a).is_ok(),check(&b)) {
+                        (_,Ok(()))=>differ_ok+=1, (false,Err(_))=>differ_wasbad+=1,
+                        (true,Err(e))=>{ differ_bad+=1; let k:String=format!("INVALID: {}",e.chars().filter(|c|!c.is_ascii_digit()).take(110).collect::<String>());
+                            let v=why.entry(k).or_insert((0,f.file_name().unwrap().to_string_lossy().into())); v.0+=1; } } } }
+                }
+            }
+        }
+        println!("FORMATLESS stride 4: units {units}  no-float-storage-image(untouched) {nostex}  byte-identical {same}  differ+valid {differ_ok}  differ+NOW-INVALID {differ_bad}  differ+was-already-invalid {differ_wasbad}  refused->fallback {refused}  rescued {rescued}  both-err {both_err}  in {} s",t0.elapsed().as_secs());
+        for (k,(n,f)) in &why { println!("  {n:5}  {k}   e.g. {f}"); }
+        assert_eq!(differ_bad,0,"the formatless state turned a VALID module INVALID");
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn nvmtl_lower_buffer_addresses(
+    data: *const u8, len: usize, out: *mut *mut u8, out_len: *mut usize,
+    err: *mut c_char, err_len: usize,
+) -> i32 {
+    if data.is_null() || out.is_null() || out_len.is_null() { return -1; }
+    match buffer_addresses::lower(std::slice::from_raw_parts(data,len)) {
+        Ok(v) => { let mut b=v.into_boxed_slice(); *out=b.as_mut_ptr(); *out_len=b.len(); std::mem::forget(b); 0 }
+        Err(e) => { if !err.is_null() && err_len>0 { let n=e.len().min(err_len-1); std::ptr::copy_nonoverlapping(e.as_ptr(),err.cast(),n); *err.add(n)=0; } -1 }
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn nvmtl_lower_buffer_addresses_ex(
+    data: *const u8, len: usize, flags: u32, out: *mut *mut u8, out_len: *mut usize, info: *mut u32,
+    err: *mut c_char, err_len: usize,
+) -> i32 {
+    if data.is_null() || out.is_null() || out_len.is_null() { return -1; }
+    let r = buffer_addresses::lower(std::slice::from_raw_parts(data,len))
+        .and_then(|v| if flags & 2 != 0 { table_ubo::convert(&v) } else { Ok(v) })
+        .and_then(|v| align_guard::guard(&v, flags & 1 != 0));
+    match r {
+        Ok((v, rep)) => {
+            if !info.is_null() { *info = rep.mask; *info.add(1) = rep.req; *info.add(2) = rep.untraceable as u32; *info.add(3) = rep.accesses; }
+            let mut b=v.into_boxed_slice(); *out=b.as_mut_ptr(); *out_len=b.len(); std::mem::forget(b); 0
+        }
+        Err(e) => { if !err.is_null() && err_len>0 { let n=e.len().min(err_len-1); std::ptr::copy_nonoverlapping(e.as_ptr(),err.cast(),n); *err.add(n)=0; } -1 }
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn nvmtl_lower_buffer_addresses_g2(
+    data: *const u8, len: usize, flags: u32, mask: u32, out: *mut *mut u8, out_len: *mut usize, info: *mut u32,
+    err: *mut c_char, err_len: usize,
+) -> i32 {
+    if data.is_null() || out.is_null() || out_len.is_null() { return -1; }
+    let mut eligible = 0u32;
+    let r = buffer_addresses::lower(std::slice::from_raw_parts(data,len))
+        .and_then(|v| if flags & 2 != 0 { table_ubo::convert(&v) } else { Ok(v) })
+        .and_then(|v| g2_inline::apply(&v, if flags & 4 != 0 { mask } else { 0 }).map(|(v, e)| { eligible = e; v }))
+        .and_then(|v| align_guard::guard(&v, flags & 1 != 0));
+    match r {
+        Ok((v, rep)) => {
+            if !info.is_null() { *info = rep.mask; *info.add(1) = rep.req; *info.add(2) = rep.untraceable as u32; *info.add(3) = rep.accesses; *info.add(4) = eligible; }
+            let mut b=v.into_boxed_slice(); *out=b.as_mut_ptr(); *out_len=b.len(); std::mem::forget(b); 0
+        }
+        Err(e) => { if !err.is_null() && err_len>0 { let n=e.len().min(err_len-1); std::ptr::copy_nonoverlapping(e.as_ptr(),err.cast(),n); *err.add(n)=0; } -1 }
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn nvmtl_translate_samplers(
+    ll:*const c_char, stage:*const c_char, json:*const c_char,
+    out:*mut *mut u8, out_len:*mut usize, err:*mut c_char, err_len:usize,
+)->i32 {
+    let result=(|| -> Result<Vec<u8>,String> {
+        if ll.is_null()||stage.is_null()||json.is_null()||out.is_null()||out_len.is_null(){return Err("null sampler argument".into())}
+        let ll=CStr::from_ptr(ll).to_str().map_err(|e|e.to_string())?;
+        let st=match CStr::from_ptr(stage).to_bytes(){b"vertex"=>Stage::Vertex,b"fragment"=>Stage::Fragment,b"kernel"=>Stage::Kernel,_=>return Err("bad stage".into())};
+        let j:serde_json::Value=serde_json::from_str(CStr::from_ptr(json).to_str().map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+        let constants:std::collections::BTreeMap<u32,Vec<u8>>=serde_json::from_value(j["constants"].clone()).map_err(|e|e.to_string())?;
+        let values:Vec<_>=constants.into_iter().collect();
+        let specialized=metal2vulkan::specialize_air_function_constants(ll,&values)?;
+        let ll=specialized.as_ref();
+        let reflection=metal2vulkan::reflect_sanitized(ll,st,metal2vulkan::passes::TransformOptions::default())?;
+        let states:std::collections::BTreeMap<u32,metal2vulkan::reflect::RuntimeSamplerState>=serde_json::from_value(j["samplers"].clone()).map_err(|e|e.to_string())?;
+        let mut opts=formatless_options(ll,st,CAPS.load(Ordering::Relaxed)).unwrap_or_default();
+        let mut used=0;
+        for (idx,state) in states {
+            if reflection.bindings.iter().any(|b| b.kind==metal2vulkan::reflect::ResourceKind::Sampler && b.metal_index==idx) {
+                opts=opts.with_runtime_sampler(idx,state)?;used+=1;
+            }
+        }
+        if used==0{return translate_one(ll,st)}
+        metal2vulkan::translate_native_no_retry_constructed_with_options(ll,st,opts)
+    })();
+    match result {
+        Ok(bytes)=>{let mut b=bytes.into_boxed_slice();*out=b.as_mut_ptr();*out_len=b.len();std::mem::forget(b);0}
+        Err(e)=>{if !err.is_null()&&err_len>0{let n=e.len().min(err_len-1);std::ptr::copy_nonoverlapping(e.as_ptr(),err.cast(),n);*err.add(n)=0;}-1}
+    }
+}
+#[cfg(test)]
+mod pixel_sampler_checks {
+ use super::*;
+ use spirv_tools::val::Validator;
+ #[test]
+ fn compositor_pixel_sampler_spirv_validates() {
+  let ll=std::fs::read_to_string("$HOME/nvmtl-tests/k7-diagnostic/GPUPass.ll").unwrap();
+  let ll=std::ffi::CString::new(ll).unwrap();let stage=std::ffi::CString::new("fragment").unwrap();
+  for filter in ["Nearest","Linear"] { for gamma in [0u8,4] {
+   let state=serde_json::json!({"min_filter":filter,"mag_filter":filter,"mip_filter":"None","address_mode_s":"ClampToEdge","address_mode_t":"ClampToEdge","address_mode_r":"ClampToEdge","coordinates":"Pixel","compare_function":"None","max_anisotropy":1,"lod_min_clamp":0.0,"lod_max_clamp":1000.0,"border_color":"TransparentBlack","reduction":"WeightedAverage","lod_bias":0.0});
+   let j=serde_json::json!({"samplers":{"0":state,"14":state},"constants":{"0":[gamma,0,0,0],"1":[0,0,0,0]}});
+   let j=std::ffi::CString::new(j.to_string()).unwrap();let(mut out,mut len)=(std::ptr::null_mut(),0);let mut err=[0i8;2048];
+   let rc=unsafe {nvmtl_translate_samplers(ll.as_ptr(),stage.as_ptr(),j.as_ptr(),&mut out,&mut len,err.as_mut_ptr(),err.len())};
+   assert_eq!(rc,0,"{}",unsafe{CStr::from_ptr(err.as_ptr())}.to_string_lossy());
+   let bytes=unsafe{std::slice::from_raw_parts(out,len)};
+   let words:Vec<u32>=bytes.chunks_exact(4).map(|c|u32::from_le_bytes(c.try_into().unwrap())).collect();
+   spirv_tools::val::create(Some(spirv_tools::TargetEnv::Vulkan_1_2)).validate(&words,None).unwrap();
+   nvmtl_translate_free(out,len);
+   println!("PASS compositor {filter} gamma={gamma}: Vulkan 1.2 SPIR-V valid; unused bound sampler filtered");
+  }}
+ }
+}
+#[cfg(test)]
+mod ca_named_checks {
+ use spirv_tools::val::Validator;
+ #[test] fn ca_named_modules_validate() {
+  for name in ["fixed_vert_lpf_spc","fixed_frag_lpf_cpf"] {
+   let b=std::fs::read(format!("$HOME/nvmtl-tests/k7-diagnostic/named-{name}.spv")).unwrap();
+   let w:Vec<u32>=b.chunks_exact(4).map(|c|u32::from_le_bytes(c.try_into().unwrap())).collect();
+   spirv_tools::val::create(Some(spirv_tools::TargetEnv::Vulkan_1_2)).validate(&w,None).unwrap();
+   println!("PASS CoreAnimation {name}: named scalar/vector specialization validates");
+  }
+ }
+}
+
+#[cfg(test)]
+mod threadgroup_configuration_tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn simultaneous_translations_keep_independent_lengths() {
+        nvmtl_translate_set_threadgroup_lengths(std::ptr::null(), 0);
+        let rendezvous = Arc::new(Barrier::new(3));
+        let handles = [64u32, 8720].map(|bytes| {
+            let rendezvous = Arc::clone(&rendezvous);
+            std::thread::spawn(move || {
+                nvmtl_translate_set_threadgroup_lengths(&bytes, 1);
+                rendezvous.wait();
+                let actual = threadgroup_lengths();
+                rendezvous.wait();
+                assert_eq!(actual, vec![(0, bytes)]);
+                nvmtl_translate_set_threadgroup_lengths(std::ptr::null(), 0);
+                assert!(threadgroup_lengths().is_empty());
+            })
+        });
+        rendezvous.wait();
+        let main_lengths = threadgroup_lengths();
+        rendezvous.wait();
+        for handle in handles { handle.join().expect("worker configuration"); }
+        assert!(main_lengths.is_empty());
+    }
+}

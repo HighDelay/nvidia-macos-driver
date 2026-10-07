@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>com.nullmoth.NVRMAGDC</string>
+  <key>CFBundleName</key><string>NVRMAGDC</string>
+  <key>CFBundleExecutable</key><string>NVRMAGDC</string>
+  <key>CFBundlePackageType</key><string>KEXT</string>
+  <key>CFBundleVersion</key><string>0.1</string>
+  <key>CFBundleShortVersionString</key><string>0.1</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>IOKitPersonalities</key><dict>
+    <key>NVDAGDCLoader</key><dict>
+      <key>CFBundleIdentifier</key><string>com.nullmoth.NVRMAGDC</string>
+      <key>IOClass</key><string>NVDAGDCLoader</string>
+      <key>IOProviderClass</key><string>IOResources</string>
+      <key>IOResourceMatch</key><string>IOKit</string>
+      <key>IOMatchCategory</key><string>NVDAGDCLoader</string>
+    </dict>
+  </dict>
+  <key>OSBundleLibraries</key><dict>
+    <key>com.apple.kpi.iokit</key><string>8.0</string>
+    <key>com.apple.kpi.libkern</key><string>8.0</string>
+    <key>com.apple.kpi.mach</key><string>8.0</string>
+    <key>com.apple.kpi.bsd</key><string>8.0</string>
+    <key>com.apple.AppleGraphicsDeviceControl</key><string>1.0.0</string>
+  </dict>
+</dict></plist>

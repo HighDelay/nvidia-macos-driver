@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>NVRM</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.nullmoth.NVRM</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>NVRM</string>
+	<key>CFBundlePackageType</key>
+	<string>KEXT</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1</string>
+	<key>CFBundleVersion</key>
+	<string>0.1</string>
+	<key>CFBundleSignature</key>
+	<string>????</string>
+	<key>OSBundleLibraries</key>
+	<dict>
+		<key>com.apple.kpi.iokit</key>
+		<string>8.0</string>
+		<key>com.apple.kpi.libkern</key>
+		<string>8.0</string>
+		<key>com.apple.kpi.bsd</key>
+		<string>8.0</string>
+		<key>com.apple.kpi.mach</key>
+		<string>8.0</string>
+		<key>com.apple.kpi.unsupported</key>
+		<string>8.0</string>
+		<key>com.apple.iokit.IOPCIFamily</key>
+		<string>1.0.0b1</string>
+	</dict>
+	<key>IOKitPersonalities</key>
+	<dict>
+		<key>NVRM</key>
+		<dict>
+			<key>CFBundleIdentifier</key>
+			<string>com.nullmoth.NVRM</string>
+			<key>IOClass</key>
+			<string>NVRM</string>
+			<key>IOProviderClass</key>
+			<string>IOPCIDevice</string>
+			<key>IOUserClientClass</key>
+			<string>NVRMUserClient</string>
+			<!-- ANY NVIDIA GPU. WAS 0x2d0510de = this box's RTX 5060 alone.
+			     IOPCIPrimaryMatch compares the 32-bit (device<<16 | vendor) word, and its
+			     "value&mask" form masks it first, so 0x000010de&0x0000ffff reads as
+			     "vendor 0x10DE, any device". IOPCIClassMatch is ANDed with it and pins the
+			     PCI base class to 0x03 (display) while leaving the subclass free, so both VGA
+			     (0x00) and 3D-controller (0x02) cards match - the two NVIDIA itself accepts.
+			     A mask match is a WIDE net ON PURPOSE. NVRM::probe() calls NVIDIA's own
+			     rm_is_supported_pci_device() and go() calls rm_is_supported_device(), and THOSE
+			     decide. If some card goes wrong, fix the gate - never narrow this to one id.-->
+			<key>IOPCIPrimaryMatch</key>
+			<string>0x000010de&amp;0x0000ffff</string>
+			<key>IOPCIClassMatch</key>
+			<string>0x03000000&amp;0xff000000</string>
+			<key>IOProbeScore</key>
+			<integer>1000</integer>
+		</dict>
+	</dict>
+</dict>
+</plist>
