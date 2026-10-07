@@ -239,7 +239,7 @@ static BOOL nvmtl_sel1_idle(int *r) { return __atomic_load_n(r, __ATOMIC_ACQUIRE
 - (id)elementStructType { return nil; }
 - (id)elementArrayType { return nil; }
 - (id)elementTypeDescription { return nil; }
-- (NSArray *)members { return @[]; }
+- (NSArray *)members { return nil; }
 - (NSUInteger)arrayLength { return 0; }
 @end
 @interface NVMTLGLBinding : NSObject <MTLBufferBinding> { @public NSString *_name; MTLBindingType _type; MTLBindingAccess _access;
@@ -262,30 +262,34 @@ static BOOL nvmtl_sel1_idle(int *r) { return __atomic_load_n(r, __ATOMIC_ACQUIRE
     return (MTLPointerType *)p;
 }
 - (id)dataTypeDescription { return _type == MTLBindingTypeBuffer ? (id)[self bufferPointerType] : nil; }
+// 10-07 (studio, Screen Sharing "Both Displays" = tiled garbage): these getters answered real-looking values (2D, length 1,
+// stride = size, Pointer/Texture, the binding index) and Apple's GL/OpenCL layer laid out its clImage*Scale kernel arguments
+// from them. The working build never implemented them: its forwarding net answered ZERO. They stay implemented (no abort)
+// and answer exactly that zero.
 // 10-07 (user crash report NM-W8WHES8G): Geekbench's OpenCL build aborted in -[NVMTLGLBinding doesNotRecognizeSelector:]
 // under GLDComputeProgramRec::buildComputeProgram. Apple's GL-on-Metal layer reads reflection through the older MTLArgument
 // / MTLType getters; measured on its binary (selector refs): arrayLength, textureType, alignment, dataSize, members,
 // elementTypeDescription. A buffer binding answers each with what MTLArgument gives for a buffer.
-- (NSUInteger)arrayLength { return 1; }
-- (MTLTextureType)textureType { return MTLTextureType2D; }
+- (NSUInteger)arrayLength { return 0; }
+- (MTLTextureType)textureType { return (MTLTextureType)0; }
 - (MTLDataType)textureDataType { return MTLDataTypeNone; }
 - (BOOL)isDepthTexture { return NO; }
-- (NSUInteger)alignment { return _align; }
-- (NSUInteger)dataSize { return _size; }
-- (NSArray *)members { return @[]; }
+- (NSUInteger)alignment { return 0; }
+- (NSUInteger)dataSize { return 0; }
+- (NSArray *)members { return nil; }
 - (id)elementTypeDescription { return nil; }
-- (BOOL)isActive { return YES; }
-- (BOOL)active { return YES; }
+- (BOOL)isActive { return NO; }
+- (BOOL)active { return NO; }
 - (NSUInteger)threadgroupMemoryAlignment { return 0; }
 - (NSUInteger)threadgroupMemoryDataSize { return 0; }
 // 10-07 (NM-P0NWBY60, RTX 3050 on driver 1.0.3): Geekbench's OpenCL build still aborted here. The renderer's selector
 // list (AppleMetalOpenGLRenderer, macOS 15.8.1) also names dataType, offset, stride and argumentIndex, which a buffer
 // binding did not answer. A buffer reads as a pointer at offset 0, one element of its own size, at its own index.
-- (MTLDataType)dataType { return _type == MTLBindingTypeBuffer ? MTLDataTypePointer : _dtype; }
+- (MTLDataType)dataType { return MTLDataTypeNone; }
 - (NSUInteger)offset { return 0; }
-- (NSUInteger)stride { return _size; }
-- (NSUInteger)argumentIndex { return _index; }
-- (MTLDataType)elementType { return _dtype; }
+- (NSUInteger)stride { return 0; }
+- (NSUInteger)argumentIndex { return 0; }
+- (MTLDataType)elementType { return MTLDataTypeNone; }
 - (id)elementStructType { return nil; }
 - (id)elementArrayType { return nil; }
 - (id)elementPointerType { return nil; }
@@ -312,21 +316,21 @@ static BOOL nvmtl_sel1_idle(int *r) { return __atomic_load_n(r, __ATOMIC_ACQUIRE
 // same older getters as NVMTLGLBinding (10-07), with what MTLArgument gives for a texture
 - (NSUInteger)alignment { return 0; }
 - (NSUInteger)dataSize { return 0; }
-- (NSArray *)members { return @[]; }
+- (NSArray *)members { return nil; }
 - (id)elementTypeDescription { return nil; }
 - (id)dataTypeDescription { return nil; }
-- (BOOL)isActive { return YES; }
-- (BOOL)active { return YES; }
+- (BOOL)isActive { return NO; }
+- (BOOL)active { return NO; }
 - (NSUInteger)bufferAlignment { return 0; }
 - (NSUInteger)bufferDataSize { return 0; }
 - (MTLDataType)bufferDataType { return MTLDataTypeNone; }
 - (NSUInteger)threadgroupMemoryAlignment { return 0; }
 - (NSUInteger)threadgroupMemoryDataSize { return 0; }
 // same four getters as NVMTLGLBinding (10-07): a texture is MTLDataTypeTexture at offset 0, at its own index
-- (MTLDataType)dataType { return MTLDataTypeTexture; }
+- (MTLDataType)dataType { return MTLDataTypeNone; }
 - (NSUInteger)offset { return 0; }
 - (NSUInteger)stride { return 0; }
-- (NSUInteger)argumentIndex { return _index; }
+- (NSUInteger)argumentIndex { return 0; }
 - (void)doesNotRecognizeSelector:(SEL)s { nvlog("GL: NVMTLGLTexBinding asked -%s (NOT IMPLEMENTED)", sel_getName(s)); [super doesNotRecognizeSelector:s]; }
 - (NSString *)description { return [NSString stringWithFormat:@"<NVMTLGLTexBinding %@ access %ld index %lu textureType %lu>", _name, (long)_access, (unsigned long)_index, (unsigned long)_ttype]; }
 @end

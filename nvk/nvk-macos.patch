@@ -4604,8 +4604,8 @@ diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --
 +         /* A plane with a PTE kind is bound through its own VA of align(nil.size_B, plane_align_B) bytes, and the
 +          * 64 KB rule above makes that range longer than nil.size_B. Sized without the round-up, binding the image to
 +          * memory of exactly the reported size asserted mem_offset_B + range_B <= mem->size_B (RTX 3050, resolution
-+          * change). Size the plane like its VA. */
-+         if (image->planes[plane].nil.pte_kind && !sparse_bound)
++          * change). Size the plane like its VA. Blackwell (3D class 0xCD97 and later) keeps the size it shipped with. */
++         if (image->planes[plane].nil.pte_kind && !sparse_bound && pdev->info.cls_eng3d < 0xCD97)
 +            plane_offset_B = align64(plane_offset_B, plane_align_B);
           image->image_size_B = plane_offset_B;
        }
@@ -8059,7 +8059,7 @@ diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --
 diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --exclude=__pycache__ --exclude=*.bak* --exclude=*.orig --exclude=.git --exclude=open-gpu-kernel-modules --strip-trailing-cr upmesa/mesa-17ca6174/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c rebase263/mesa/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c
 --- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c	1969-12-31 16:00:00
 +++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c	2026-10-05 15:58:51
-@@ -0,0 +1,1323 @@
+@@ -0,0 +1,1322 @@
 +
 +
 +
@@ -8783,21 +8783,20 @@ diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --
 +    * case"); Turing takes the legacy path, where the CE engine comes from NVB0B5_ALLOCATION_PARAMETERS
 +    * (kceGetEngineDescFromAllocParams) and NULL params leave RM no engine. Name the partner CE the way RM does on
 +    * Ampere (NV2080_CTRL_CMD_GPU_GET_ENGINE_PARTNERLIST). Ampere and later ignore these params. */
-+   NVB0B5_ALLOCATION_PARAMETERS ceParams = { .version = NVB0B5_ALLOCATION_PARAMETERS_VERSION_1, .engineType = 0 };
-+   void *ceAlloc = NULL;
-+   if (!ctx->ceOnly) {
++   /* 10-07: passing the partner CE first changed the copy path on the RTX 5060 (screen 2, which WindowServer fills by
++    * copies, went black then flickered). The pre-10-07 call stays FIRST, so every card that works keeps it unchanged;
++    * the partner CE is only the retry, for Turing, where the plain call is refused. */
++   NV_STATUS cs = nvRmApiAlloc(&rm, ctx->hChannel, &ctx->subchannels.hCopy, pdev->base.dev_info.cls_copy, NULL);
++   if (cs != NV_OK && !ctx->ceOnly) {
 +      NV2080_CTRL_GPU_GET_ENGINE_PARTNERLIST_PARAMS pl = { .engineType = NV2080_ENGINE_TYPE_GRAPHICS,
 +                                                           .partnershipClassId = pdev->base.dev_info.cls_copy, .runqueue = 0 };
 +      NV_STATUS ps = nvRmApiControl(&rm, pdev->hSubdevice, NV2080_CTRL_CMD_GPU_GET_ENGINE_PARTNERLIST, &pl, sizeof(pl));
-+      if (ps == NV_OK && pl.numPartners >= 1) { ceParams.engineType = pl.partnerList[0]; ceAlloc = &ceParams; }
-+      else fprintf(stderr, "nvrm: no GR partner CE (rc 0x%x, %u partners) - copy object without engine params\n", (unsigned)ps, (unsigned)pl.numPartners);
-+   } else {
-+      ceParams.engineType = engineType; ceAlloc = &ceParams;
-+   }
-+   NV_STATUS cs = nvRmApiAlloc(&rm, ctx->hChannel, &ctx->subchannels.hCopy, pdev->base.dev_info.cls_copy, ceAlloc);
-+   if (cs != NV_OK && ceAlloc) {   /* never worse than before: retry the exact pre-10-07 call */
-+      fprintf(stderr, "nvrm: copy object with CE engine 0x%x refused rc 0x%x - retrying without params\n", (unsigned)ceParams.engineType, (unsigned)cs);
-+      cs = nvRmApiAlloc(&rm, ctx->hChannel, &ctx->subchannels.hCopy, pdev->base.dev_info.cls_copy, NULL);
++      fprintf(stderr, "nvrm: copy object on the graphics channel refused rc 0x%x - partner CE lookup rc 0x%x, %u partner(s)\n",
++              (unsigned)cs, (unsigned)ps, (unsigned)pl.numPartners);
++      if (ps == NV_OK && pl.numPartners >= 1) {
++         NVB0B5_ALLOCATION_PARAMETERS ceParams = { .version = NVB0B5_ALLOCATION_PARAMETERS_VERSION_1, .engineType = pl.partnerList[0] };
++         cs = nvRmApiAlloc(&rm, ctx->hChannel, &ctx->subchannels.hCopy, pdev->base.dev_info.cls_copy, &ceParams);
++      }
 +   }
 +   NV_CHECK(cs);
 +   if (!ctx->ceOnly) {
