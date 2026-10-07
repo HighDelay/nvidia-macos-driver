@@ -8046,7 +8046,7 @@ diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --
 diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --exclude=__pycache__ --exclude=*.bak* --exclude=*.orig --exclude=.git --exclude=open-gpu-kernel-modules --strip-trailing-cr upmesa/mesa-17ca6174/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c rebase263/mesa/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c
 --- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c	1969-12-31 16:00:00
 +++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c	2026-10-05 15:58:51
-@@ -0,0 +1,1281 @@
+@@ -0,0 +1,1300 @@
 +
 +
 +
@@ -8647,9 +8647,10 @@ diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --
 +
 +
 +static VkResult
-+nvkmd_nvrm_create_exec_ctx(struct nvkmd_dev *_dev,
++nvkmd_nvrm_create_exec_ctx_on(struct nvkmd_dev *_dev,
 +                              struct vk_object_base *log_obj,
 +                              enum nvkmd_engines engines,
++                              bool allowCe,
 +                              struct nvkmd_ctx **ctx_out)
 +{
 +   struct nvkmd_nvrm_dev *dev = nvkmd_nvrm_dev(_dev);
@@ -8687,7 +8688,7 @@ diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --
 +
 +
 +
-+   ctx->ceOnly = engines == NVKMD_ENGINE_COPY && nvrm610_on("CECHAN");
++   ctx->ceOnly = allowCe && engines == NVKMD_ENGINE_COPY && nvrm610_on("CECHAN");
 +   NvU32 engineType = ctx->ceOnly ? NV2080_ENGINE_TYPE_COPY4 : NV2080_ENGINE_TYPE_GRAPHICS;
 +   NvHandle chanParent = pdev->hDevice;
 +   if (!ctx->ceOnly && nvrm610_on("TSG")) {
@@ -8875,6 +8876,24 @@ diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --
 +error:
 +   nvkmd_ctx_destroy(&ctx->base);
 +	return vkRes;
++}
++
++/* RTX 3060 Ti (GA104): RM created the COPY4 channel and then refused the copy object on it ("bad class 0xc7b5"), so
++ * every vkCreateDevice failed. COPY4 is the async copy engine NVIDIA's driver uses on Blackwell; copy engine numbering
++ * and the classes each one exposes differ per chip. When the copy-engine context cannot be built on this GPU, build the
++ * copy queue on a graphics channel instead, which every chip runs. */
++static VkResult
++nvkmd_nvrm_create_exec_ctx(struct nvkmd_dev *_dev,
++                              struct vk_object_base *log_obj,
++                              enum nvkmd_engines engines,
++                              struct nvkmd_ctx **ctx_out)
++{
++   VkResult r = nvkmd_nvrm_create_exec_ctx_on(_dev, log_obj, engines, true, ctx_out);
++   if (r != VK_SUCCESS && engines == NVKMD_ENGINE_COPY && nvrm610_on("CECHAN")) {
++      fprintf(stderr, "nvrm: copy-engine queue could not be built on this GPU (VkResult %d) - copy queue on a graphics channel\n", (int)r);
++      r = nvkmd_nvrm_create_exec_ctx_on(_dev, log_obj, engines, false, ctx_out);
++   }
++   return r;
 +}
 +
 +
