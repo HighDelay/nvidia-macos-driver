@@ -8059,7 +8059,7 @@ diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --
 diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --exclude=__pycache__ --exclude=*.bak* --exclude=*.orig --exclude=.git --exclude=open-gpu-kernel-modules --strip-trailing-cr upmesa/mesa-17ca6174/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c rebase263/mesa/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c
 --- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c	1969-12-31 16:00:00
 +++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c	2026-10-05 15:58:51
-@@ -0,0 +1,1300 @@
+@@ -0,0 +1,1323 @@
 +
 +
 +
@@ -8086,6 +8086,8 @@ diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --
 +#include "class/clc361.h"
 +#include "class/clc46f.h"
 +#include "class/cl2080_notification.h"
++#include "class/clb0b5sw.h" // NVB0B5_ALLOCATION_PARAMETERS (copy engine instance)
++#include "ctrl/ctrl2080/ctrl2080gpu.h" // NV2080_CTRL_CMD_GPU_GET_ENGINE_PARTNERLIST
 +#include "class/clc36f.h"
 +#include "class/cla16f.h"
 +#include "class/cl0005.h"
@@ -8776,7 +8778,28 @@ diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --
 +		sizeof(tokenParams)
 +	));
 +
-+   NV_CHECK(nvRmApiAlloc(&rm, ctx->hChannel, &ctx->subchannels.hCopy, pdev->base.dev_info.cls_copy, NULL));
++   /* GTX 1650 (TU117), 10-07: the copy object on a GRAPHICS channel failed here (VK_ERROR_UNKNOWN) and no queue came up.
++    * Ampere+ RM pairs a CE object on a GR channel with the GR engine's partner CE itself (channel_descendant.c, "GRCE
++    * case"); Turing takes the legacy path, where the CE engine comes from NVB0B5_ALLOCATION_PARAMETERS
++    * (kceGetEngineDescFromAllocParams) and NULL params leave RM no engine. Name the partner CE the way RM does on
++    * Ampere (NV2080_CTRL_CMD_GPU_GET_ENGINE_PARTNERLIST). Ampere and later ignore these params. */
++   NVB0B5_ALLOCATION_PARAMETERS ceParams = { .version = NVB0B5_ALLOCATION_PARAMETERS_VERSION_1, .engineType = 0 };
++   void *ceAlloc = NULL;
++   if (!ctx->ceOnly) {
++      NV2080_CTRL_GPU_GET_ENGINE_PARTNERLIST_PARAMS pl = { .engineType = NV2080_ENGINE_TYPE_GRAPHICS,
++                                                           .partnershipClassId = pdev->base.dev_info.cls_copy, .runqueue = 0 };
++      NV_STATUS ps = nvRmApiControl(&rm, pdev->hSubdevice, NV2080_CTRL_CMD_GPU_GET_ENGINE_PARTNERLIST, &pl, sizeof(pl));
++      if (ps == NV_OK && pl.numPartners >= 1) { ceParams.engineType = pl.partnerList[0]; ceAlloc = &ceParams; }
++      else fprintf(stderr, "nvrm: no GR partner CE (rc 0x%x, %u partners) - copy object without engine params\n", (unsigned)ps, (unsigned)pl.numPartners);
++   } else {
++      ceParams.engineType = engineType; ceAlloc = &ceParams;
++   }
++   NV_STATUS cs = nvRmApiAlloc(&rm, ctx->hChannel, &ctx->subchannels.hCopy, pdev->base.dev_info.cls_copy, ceAlloc);
++   if (cs != NV_OK && ceAlloc) {   /* never worse than before: retry the exact pre-10-07 call */
++      fprintf(stderr, "nvrm: copy object with CE engine 0x%x refused rc 0x%x - retrying without params\n", (unsigned)ceParams.engineType, (unsigned)cs);
++      cs = nvRmApiAlloc(&rm, ctx->hChannel, &ctx->subchannels.hCopy, pdev->base.dev_info.cls_copy, NULL);
++   }
++   NV_CHECK(cs);
 +   if (!ctx->ceOnly) {
 +   NV_CHECK(nvRmApiAlloc(&rm, ctx->hChannel, &ctx->subchannels.hEng2d, pdev->base.dev_info.cls_eng2d, NULL));
 +   NV_CHECK(nvRmApiAlloc(&rm, ctx->hChannel, &ctx->subchannels.hEng3d, pdev->base.dev_info.cls_eng3d, NULL));
