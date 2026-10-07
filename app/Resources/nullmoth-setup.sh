@@ -76,7 +76,17 @@ if [ -n "$COLLECT" ]; then
     echo; echo "== NullMoth kexts loaded"; kmutil showloaded --list-only 2>/dev/null | grep -i nullmoth
     echo; echo "== auxiliary collection"; kmutil inspect -a x86_64 -A /Library/KernelCollections/AuxiliaryKernelExtensions.kc 2>/dev/null | grep -i nullmoth
     echo; echo "== driver files"; ls -la /Library/Extensions/NV*.kext /Library/GPUBundles 2>/dev/null
-    echo; echo "== NVRM"; ioreg -r -n NVRM -d 1 -l 2>/dev/null | grep -E '"nvrm-' ; } > "$COLLECT/driver-state.txt" 2>&1
+    echo; echo "== NVRM"; ioreg -r -n NVRM -d 1 -l 2>/dev/null | grep -E '"nvrm-'
+    # 10-07 (NM-34FKN6ZK): a second user's install failed and nothing sent named the card. The GPU model and PCI ID
+    # are what decide which code path the driver takes (Turing/Ampere/Ada/Blackwell).
+    echo; echo "== graphics"; system_profiler SPDisplaysDataType 2>/dev/null | grep -E "Chipset Model|Type:|Bus:|VRAM|Vendor|Device ID|Revision ID|Metal|Resolution|Display Type|Online"
+    echo; echo "== NVIDIA PCI devices"; ioreg -r -c IOPCIDevice -d 1 -l 2>/dev/null | awk '/^\+-o /{n=$0} /"vendor-id" = <de100000>/{print n}'
+    } > "$COLLECT/driver-state.txt" 2>&1
+  # the kernel's own words from the last boots: NVRM/NVAccel/NVRMFB print why they stopped (GSP boot, BAR, display).
+  # A boot that hung early may not have reached the log store; a later boot's panic report then carries it.
+  log show --last 3d --style compact --predicate 'process == "kernel" AND (eventMessage CONTAINS[c] "nvrm" OR eventMessage CONTAINS[c] "nvaccel" OR eventMessage CONTAINS[c] "nvidia" OR eventMessage CONTAINS[c] "nullmoth" OR eventMessage CONTAINS[c] "gsp")' 2>/dev/null \
+    | tail -n 6000 > "$COLLECT/driver-kernel-log.txt"
+  for f in $(ls -t /Library/Logs/DiagnosticReports/*.panic 2>/dev/null | head -3); do cp "$f" "$COLLECT/macos-$(basename "$f").txt"; done
   n=0
   for d in $(diskutil list | awk '/ EFI | DOS_FAT_32 | Windows_FAT_32 | Microsoft Basic Data /{print $NF}' | grep -E '^disk[0-9]+s[0-9]+$'); do
     mp=$(mount_efi "$d") || continue
