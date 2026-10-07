@@ -431,7 +431,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         guard let d = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0),
               (try? d.write(to: dir.appendingPathComponent("Info.plist"))) != nil else { send("usbErr", "could not write the map"); return }
-        run(mode: "usbmap", pkg: "", efi: efi, extra: ["--usbmap", dir.deletingLastPathComponent().path])
+        // the script wants the folder that HOLDS UTBMap.kext (10-07, NM-HZTKJHPZ: passing the .kext itself failed every map)
+        run(mode: "usbmap", pkg: "", efi: efi, extra: ["--usbmap", dir.deletingLastPathComponent().deletingLastPathComponent().path])
     }
 
     // "Send logs" (two clicks: the button, then Send). Collects 1401's own logs, the driver's state, a redacted crash

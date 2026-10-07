@@ -54,7 +54,7 @@ macOS asks you to **allow the extensions** in System Settings → Privacy & Secu
 
 ## 1401 Mac app (easiest)
 
-Download `1401-Mac-1.0.0.dmg` from **Releases**, open it, and run **1401** (the driver package is inside the disk
+Download `1401-Mac-1.0.2.dmg` from **Releases**, open it, and run **1401** (the driver package is inside the disk
 image, so nothing else to download). Follow its four steps. It works on any OpenCore
 setup, whether 1401 built it or you did: it finds the OpenCore that started your Mac (in `EFI/OC` or `EFI/BOOT`, on an
 EFI or FAT32 partition), shows every change before making it, backs the config up, installs the driver, and adds

@@ -290,7 +290,11 @@ fi
 
 if [ -n "$USBMAP" ]; then
   step "Installing the USB map"
-  K="$USBMAP/UTBMap.kext"; plutil -lint "$K/Contents/Info.plist" >/dev/null || stop "the USB map the app wrote is not valid"
+  # 10-07 (NM-HZTKJHPZ): 1401 Mac 1.0.1 passed the .kext itself, so "$USBMAP/UTBMap.kext" never existed and every map
+  # stopped as "not valid". Take the folder holding the kext or the kext itself.
+  case "$USBMAP" in */UTBMap.kext|*/UTBMap.kext/) K="${USBMAP%/}";; *) K="$USBMAP/UTBMap.kext";; esac
+  [ -f "$K/Contents/Info.plist" ] || stop "the USB map the app wrote is missing ($K)"
+  plutil -lint "$K/Contents/Info.plist" >/dev/null || stop "the USB map the app wrote is not valid"
   KD="$(dirname "$C")/Kexts"; [ -d "$KD/USBToolBox.kext" ] || stop "USBToolBox.kext is not in $KD - the map needs it (1401 builds include it)"
   kidx() { local i=0 p; while p=$(plutil -extract Kernel.Add.$i.BundlePath raw -o - "$C" 2>/dev/null); do [ "$p" = "$1" ] && { echo $i; return; }; i=$((i+1)); done; }
   [ -n "$(kidx USBToolBox.kext)" ] || stop "USBToolBox.kext is not in the config's Kernel -> Add"
