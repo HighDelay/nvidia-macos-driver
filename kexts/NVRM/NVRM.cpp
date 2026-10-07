@@ -13,6 +13,7 @@
 #include <pexpert/pexpert.h>
 #include <kern/thread_call.h>
 #include <IOKit/IOPlatformExpert.h>
+#include <IOKit/acpi/IOACPIPlatformDevice.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <mach/mach_time.h>
 #include <kern/sched_prim.h>
@@ -593,6 +594,88 @@ static void nv_xnu_dump_gsp_regs(nv_state_t *nv)
     map->release(); md->release();
 }
 
+// 10-07 (1401 Probe uploads, 70+ PCs): BAR1 was always moved to 1 TB (kBigBase) with the window capped at
+// 0x3ffbfffffff - the PCI window of Core Ultra 200 (Arrow Lake) boards, where it was built. Every Intel 6th-14th gen probe
+// reports 39 bits physical and a 64-bit PCI window ending at 0x7fffffffff (512 GB); 46-bit Alder/Raptor Lake boards and
+// Ryzen B450/B550 boards end theirs at 0x7fffffffff too. At 1 TB the card is outside what the CPU or the host bridge
+// decodes, so on those machines the GPU went silent. BAR1 now goes where the FIRMWARE says PCI memory lives: the host
+// bridge's ACPI _CRS 64-bit window, clipped to the CPU's MAXPHYADDR, top-down, away from every other device and bridge.
+
+// The largest 64-bit memory window in the host bridge's _CRS (QWord Address Space descriptors, ACPI 6.5 6.4.3.5.1).
+static bool nvrmHostWindow(IOService *dev, UInt64 *outMin, UInt64 *outMax)
+{
+    IOACPIPlatformDevice *acpi = NULL;
+    IOService *s = dev;
+    for (int i = 0; s && i < 16 && !acpi; i++) { s = s->getProvider(); acpi = OSDynamicCast(IOACPIPlatformDevice, s); }
+    if (!acpi) return false;
+    OSObject *o = NULL;
+    if (acpi->evaluateObject("_CRS", &o) != kIOReturnSuccess || !o) return false;
+    bool found = false;
+    if (OSData *d = OSDynamicCast(OSData, o)) {
+        const UInt8 *p = (const UInt8 *)d->getBytesNoCopy();
+        UInt32 n = d->getLength(), i = 0;
+        while (p && i < n) {
+            UInt8 t = p[i];
+            if (t & 0x80) {                                   // large item: tag, 16-bit length, body
+                if (i + 3 > n) break;
+                UInt32 len = (UInt32)p[i + 1] | ((UInt32)p[i + 2] << 8);
+                if (i + 3 + len > n) break;
+                if (t == 0x8A && len >= 43 && p[i + 3] == 0) {   // QWord Address Space, resource type 0 = memory
+                    UInt64 mn, mx, tra;
+                    memcpy(&mn, p + i + 14, 8); memcpy(&mx, p + i + 22, 8); memcpy(&tra, p + i + 30, 8);
+                    if (tra == 0 && mn >= (4ULL << 30) && mx > mn && (!found || mx - mn > *outMax - *outMin)) {
+                        *outMin = mn; *outMax = mx; found = true;
+                    }
+                }
+                i += 3 + len;
+            } else {                                          // small item: length in bits 0-2; 0x79 = end tag
+                if ((t >> 3) == 0x0F) break;
+                i += 1 + (t & 7);
+            }
+        }
+    }
+    o->release();
+    return found;
+}
+
+// CPUID 0x80000008 EAX[7:0]: the physical address width the CPU can reach (MAXPHYADDR).
+static unsigned nvrmPhysBits()
+{
+    uint32_t a, b, c, d;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0x80000000u), "c"(0u));
+    if (a < 0x80000008u) return 36;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0x80000008u), "c"(0u));
+    return a & 0xff;
+}
+
+// True when [lo, hi] overlaps a memory range of any other PCI function, or the prefetchable window of a bridge other
+// than our own root port (two bridges claiming one address is a decode conflict even with nothing behind it).
+static bool nvrmRangeBusy(UInt64 lo, UInt64 hi, IOPCIDevice *self, IOPCIDevice *ourPort)
+{
+    bool busy = false;
+    IORegistryIterator *it = IORegistryIterator::iterateOver(gIOServicePlane, kIORegistryIterateRecursively);
+    if (!it) return true;
+    while (OSObject *e = it->getNextObject()) {
+        IOPCIDevice *d = OSDynamicCast(IOPCIDevice, e);
+        if (!d || d == self || d == ourPort) continue;
+        if (OSArray *mem = d->getDeviceMemory())
+            for (unsigned i = 0; i < mem->getCount() && !busy; i++)
+                if (IOMemoryDescriptor *m = OSDynamicCast(IOMemoryDescriptor, mem->getObject(i))) {
+                    UInt64 a = m->getPhysicalAddress(), z = a + m->getLength() - 1;
+                    if (m->getLength() && a <= hi && z >= lo) { LOG("bar1: 0x%llx-0x%llx is taken by a PCI device's 0x%llx-0x%llx", lo, hi, a, z); busy = true; }
+                }
+        if (!busy && (d->configRead8(0x0e) & 0x7f) == 1) {
+            UInt32 w = d->configRead32(0x24);
+            UInt64 a = ((UInt64)d->configRead32(0x28) << 32) | ((UInt64)(w & 0xfff0) << 16);
+            UInt64 z = ((UInt64)d->configRead32(0x2c) << 32) | ((UInt64)(w & 0xfff00000) | 0xfffff);
+            if ((w & 0xf) == 1 && z > a && a <= hi && z >= lo) { LOG("bar1: 0x%llx-0x%llx overlaps a bridge window 0x%llx-0x%llx", lo, hi, a, z); busy = true; }
+        }
+        if (busy) break;
+    }
+    it->release();
+    return busy;
+}
+
 bool NVRM::placeLargeBar1()
 {
     static const UInt64 kBigBase = 0x10000000000ULL;
@@ -607,12 +690,25 @@ bool NVRM::placeLargeBar1()
     if (!cap) { LOG("bar1: no Resizable BAR capability — BAR1 left as IOPCIFamily placed it"); return false; }
     UInt32 nbars = (fPCI->extendedConfigRead32(cap + 8) >> 5) & 7;
     UInt64 bar1Size = 0;
+    UInt32 rbCtlOff = 0, rbCtlOld = 0, rbSupported = 0;
     for (UInt32 i = 0; i < nbars && i < 6; i++) {
         UInt32 ctl = fPCI->extendedConfigRead32(cap + 8 + i * 8);
-        if ((ctl & 7) == 1) bar1Size = 1ULL << (20 + ((ctl >> 8) & 0x3f));
+        if ((ctl & 7) == 1) {
+            bar1Size = 1ULL << (20 + ((ctl >> 8) & 0x3f));
+            rbCtlOff = cap + 8 + i * 8; rbCtlOld = ctl; rbSupported = fPCI->extendedConfigRead32(cap + 4 + i * 8) >> 4;
+        }
     }
-    LOG("bar1: Resizable BAR capability @0x%x says BAR1 = %llu MB", cap, bar1Size >> 20);
-    if (bar1Size < (4ULL << 30)) return false;
+    LOG("bar1: Resizable BAR capability @0x%x says BAR1 = %llu MB (sizes supported mask 0x%x)", cap, bar1Size >> 20, rbSupported);
+    // 10-07: with "Resizable BAR" off in the BIOS (or a card the firmware leaves at 256 MB) the firmware places a small
+    // BAR1 over the boot screen and the driver had nothing to move. The card itself can resize: take the largest size it
+    // supports between 4 GB and 32 GB, written below once the destination is proven free.
+    UInt64 newSize = 0;
+    if (bar1Size < (4ULL << 30)) {
+        for (int k = 15; k >= 12; k--) if (rbCtlOff && (rbSupported >> k) & 1) { newSize = 1ULL << (20 + k); break; }
+        if (!newSize) { LOG("bar1: BAR1 is %llu MB and the card offers no 4-32 GB size — not placing", bar1Size >> 20); return false; }
+        LOG("bar1: BAR1 is %llu MB; will resize it to %llu MB", bar1Size >> 20, newSize >> 20);
+        bar1Size = newSize;
+    }
 
     UInt32 lo14 = fPCI->configRead32(0x14), lo1c = fPCI->configRead32(0x1c), hi20 = fPCI->configRead32(0x20);
     UInt32 old18 = fPCI->configRead32(0x18);
@@ -628,8 +724,20 @@ bool NVRM::placeLargeBar1()
         if (m->getPhysicalAddress() == (lo10 & ~0xFULL)) bar0 = m;
     }
     if (!bar0 || !bar3Size) { LOG("bar1: BAR0/BAR3 apertures not found in the nub (bar0 %d bar3 %llu) — not placing", bar0 != NULL, bar3Size); return false; }
-    UInt64 bar1Base = kBigBase, bar3Base = kBigBase + bar1Size, winEnd = bar3Base + bar3Size - 1;
-    if (winEnd > kHostWindowEnd) { LOG("bar1: region ends past the host window — not placing"); return false; }
+    UInt64 wMin = 0, wMax = 0;
+    const unsigned physBits = nvrmPhysBits();
+    const UInt64 physTop = physBits >= 63 ? ~0ULL : (1ULL << physBits) - 1;
+    if (nvrmHostWindow(fPCI, &wMin, &wMax)) {
+        LOG("bar1: host bridge 64-bit window 0x%llx-0x%llx (ACPI _CRS), CPU reaches %u bits", wMin, wMax, physBits);
+    } else {
+        wMin = kBigBase; wMax = kHostWindowEnd;   // the pre-10-07 placement, kept only where the CPU can reach it
+        LOG("bar1: no 64-bit window in the host bridge's _CRS — using 0x%llx-0x%llx (CPU reaches %u bits)", wMin, wMax, physBits);
+    }
+    if (wMax > physTop) wMax = physTop;
+    const UInt64 total = bar1Size + bar3Size;
+    if (wMax <= wMin || wMax - wMin + 1 < total) { LOG("bar1: window 0x%llx-0x%llx cannot hold %llu MB — not placing", wMin, wMax, total >> 20); return false; }
+    UInt64 bar1Base = ((wMax + 1 - total) / bar1Size) * bar1Size, bar3Base = bar1Base + bar1Size, winEnd = bar3Base + bar3Size - 1;
+    if (bar1Base < wMin || winEnd > wMax) { LOG("bar1: no %llu MB-aligned slot in 0x%llx-0x%llx — not placing", bar1Size >> 20, wMin, wMax); return false; }
 
     IOService *pp = fPCI->getProvider();
     IOPCIDevice *rp = pp ? OSDynamicCast(IOPCIDevice, pp->getProvider()) : NULL;
@@ -642,8 +750,20 @@ bool NVRM::placeLargeBar1()
     LOG("bar1: placing BAR1 %llu MB @0x%llx, BAR3 %llu MB @0x%llx, root port window 0x%llx-0x%llx (was 0x%08x %08x/%08x)",
         bar1Size >> 20, bar1Base, bar3Size >> 20, bar3Base, bar1Base, winEnd, rp24, rp28, rp2c);
 
+    if (nvrmRangeBusy(bar1Base, winEnd, fPCI, rp)) { LOG("bar1: destination is in use — not placing"); return false; }
+
     UInt16 cmd = fPCI->configRead16(0x04);
     fPCI->configWrite16(0x04, cmd & ~0x2);
+    if (newSize) {   // PCIe 7.8.6: change the size only while memory decode is off
+        fPCI->extendedConfigWrite32(rbCtlOff, (rbCtlOld & ~0x3f00u) | ((UInt32)(__builtin_ctzll(newSize) - 20) << 8));
+        UInt32 got = fPCI->extendedConfigRead32(rbCtlOff);
+        if (((got >> 8) & 0x3f) != (UInt32)(__builtin_ctzll(newSize) - 20)) {
+            LOG("bar1: resize to %llu MB did not take (ctl 0x%x) — restoring", newSize >> 20, got);
+            fPCI->extendedConfigWrite32(rbCtlOff, rbCtlOld); fPCI->configWrite32(0x14, lo14); fPCI->configWrite32(0x18, old18);
+            fPCI->configWrite16(0x04, cmd); return false;
+        }
+        LOG("bar1: resized BAR1 to %llu MB", newSize >> 20);
+    }
     fPCI->configWrite32(0x14, (UInt32)bar1Base | (lo14 & 0xF)); fPCI->configWrite32(0x18, (UInt32)(bar1Base >> 32));
     fPCI->configWrite32(0x1c, (UInt32)bar3Base | (lo1c & 0xF)); fPCI->configWrite32(0x20, (UInt32)(bar3Base >> 32));
     rp->configWrite32(0x24, 0x0000fff0);
@@ -658,6 +778,7 @@ bool NVRM::placeLargeBar1()
         LOG("bar1: read-back MISMATCH (bar 0x%08x %08x, rp 0x%08x %08x %08x) — restoring what IOPCIFamily left",
             fPCI->configRead32(0x14), fPCI->configRead32(0x18), rp->configRead32(0x24), rp->configRead32(0x28), rp->configRead32(0x2c));
         rp->configWrite32(0x24, 0x0000fff0); rp->configWrite32(0x28, rp28); rp->configWrite32(0x2c, rp2c); rp->configWrite32(0x24, rp24);
+        if (newSize) fPCI->extendedConfigWrite32(rbCtlOff, rbCtlOld);
         fPCI->configWrite32(0x14, lo14); fPCI->configWrite32(0x18, old18); fPCI->configWrite32(0x1c, lo1c); fPCI->configWrite32(0x20, hi20);
         fPCI->configWrite16(0x04, cmd);
         return false;
