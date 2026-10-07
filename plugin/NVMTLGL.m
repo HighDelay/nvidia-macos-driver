@@ -239,6 +239,8 @@ static BOOL nvmtl_sel1_idle(int *r) { return __atomic_load_n(r, __ATOMIC_ACQUIRE
 - (id)elementStructType { return nil; }
 - (id)elementArrayType { return nil; }
 - (id)elementTypeDescription { return nil; }
+- (NSArray *)members { return @[]; }
+- (NSUInteger)arrayLength { return 0; }
 @end
 @interface NVMTLGLBinding : NSObject <MTLBufferBinding> { @public NSString *_name; MTLBindingType _type; MTLBindingAccess _access;
   NSUInteger _index, _size, _align; MTLDataType _dtype; } @end
@@ -260,6 +262,22 @@ static BOOL nvmtl_sel1_idle(int *r) { return __atomic_load_n(r, __ATOMIC_ACQUIRE
     return (MTLPointerType *)p;
 }
 - (id)dataTypeDescription { return _type == MTLBindingTypeBuffer ? (id)[self bufferPointerType] : nil; }
+// 10-07 (user crash report NM-W8WHES8G): Geekbench's OpenCL build aborted in -[NVMTLGLBinding doesNotRecognizeSelector:]
+// under GLDComputeProgramRec::buildComputeProgram. Apple's GL-on-Metal layer reads reflection through the older MTLArgument
+// / MTLType getters; measured on its binary (selector refs): arrayLength, textureType, alignment, dataSize, members,
+// elementTypeDescription. A buffer binding answers each with what MTLArgument gives for a buffer.
+- (NSUInteger)arrayLength { return 1; }
+- (MTLTextureType)textureType { return MTLTextureType2D; }
+- (MTLDataType)textureDataType { return MTLDataTypeNone; }
+- (BOOL)isDepthTexture { return NO; }
+- (NSUInteger)alignment { return _align; }
+- (NSUInteger)dataSize { return _size; }
+- (NSArray *)members { return @[]; }
+- (id)elementTypeDescription { return nil; }
+- (BOOL)isActive { return YES; }
+- (BOOL)active { return YES; }
+- (NSUInteger)threadgroupMemoryAlignment { return 0; }
+- (NSUInteger)threadgroupMemoryDataSize { return 0; }
 - (void)doesNotRecognizeSelector:(SEL)s { nvlog("GL: NVMTLGLBinding asked -%s (NOT IMPLEMENTED)", sel_getName(s)); [super doesNotRecognizeSelector:s]; }
 - (NSString *)description { return [NSString stringWithFormat:@"<NVMTLGLBinding %@ type %ld access %ld index %lu size %lu>",
                                      _name, (long)_type, (long)_access, (unsigned long)_index, (unsigned long)_size]; }
@@ -280,6 +298,19 @@ static BOOL nvmtl_sel1_idle(int *r) { return __atomic_load_n(r, __ATOMIC_ACQUIRE
 - (BOOL)isDepthTexture { return NO; }
 - (BOOL)depthTexture { return NO; }
 - (NSUInteger)arrayLength { return 1; }
+// same older getters as NVMTLGLBinding (10-07), with what MTLArgument gives for a texture
+- (NSUInteger)alignment { return 0; }
+- (NSUInteger)dataSize { return 0; }
+- (NSArray *)members { return @[]; }
+- (id)elementTypeDescription { return nil; }
+- (id)dataTypeDescription { return nil; }
+- (BOOL)isActive { return YES; }
+- (BOOL)active { return YES; }
+- (NSUInteger)bufferAlignment { return 0; }
+- (NSUInteger)bufferDataSize { return 0; }
+- (MTLDataType)bufferDataType { return MTLDataTypeNone; }
+- (NSUInteger)threadgroupMemoryAlignment { return 0; }
+- (NSUInteger)threadgroupMemoryDataSize { return 0; }
 - (void)doesNotRecognizeSelector:(SEL)s { nvlog("GL: NVMTLGLTexBinding asked -%s (NOT IMPLEMENTED)", sel_getName(s)); [super doesNotRecognizeSelector:s]; }
 - (NSString *)description { return [NSString stringWithFormat:@"<NVMTLGLTexBinding %@ access %ld index %lu textureType %lu>", _name, (long)_access, (unsigned long)_index, (unsigned long)_ttype]; }
 @end
