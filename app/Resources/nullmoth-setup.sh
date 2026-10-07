@@ -80,12 +80,34 @@ if [ -n "$COLLECT" ]; then
     # 10-07 (NM-34FKN6ZK): a second user's install failed and nothing sent named the card. The GPU model and PCI ID
     # are what decide which code path the driver takes (Turing/Ampere/Ada/Blackwell).
     echo; echo "== graphics"; system_profiler SPDisplaysDataType 2>/dev/null | grep -E "Chipset Model|Type:|Bus:|VRAM|Vendor|Device ID|Revision ID|Metal|Resolution|Display Type|Online"
-    echo; echo "== NVIDIA PCI devices"; ioreg -r -c IOPCIDevice -d 1 -l 2>/dev/null | awk '/^\+-o /{n=$0} /"vendor-id" = <de100000>/{print n}'
+    echo; echo "== NVIDIA PCI devices"; ioreg -r -c IOPCIDevice -d 1 -l 2>/dev/null | awk '
+      /\+-o / { if (nv) print block; block=$0; nv=0; next }
+      /"vendor-id" = <de100000>/ { nv=1 }
+      /"(vendor-id|device-id|subsystem-vendor-id|subsystem-id|class-code|model|assigned-addresses|reg|nvrm-[^"]*)"/ { block=block "\n" $0 }
+      END { if (nv) print block }'
+    echo; echo "== display bring-up"; sysctl kern.boottime debug.nvaccel_heads_published debug.nvaccelfb debug.nvrmfb_agdc debug.nvaccel_iop 2>&1
     } > "$COLLECT/driver-state.txt" 2>&1
   # the kernel's own words from the last boots: NVRM/NVAccel/NVRMFB print why they stopped (GSP boot, BAR, display).
   # A boot that hung early may not have reached the log store; a later boot's panic report then carries it.
-  log show --last 3d --style compact --predicate 'process == "kernel" AND (eventMessage CONTAINS[c] "nvrm" OR eventMessage CONTAINS[c] "nvaccel" OR eventMessage CONTAINS[c] "nvidia" OR eventMessage CONTAINS[c] "nullmoth" OR eventMessage CONTAINS[c] "gsp")' 2>/dev/null \
+  log show --last 3d --style compact --predicate 'process == "kernel" AND (eventMessage CONTAINS[c] "nvrm" OR eventMessage CONTAINS[c] "nvaccel" OR eventMessage CONTAINS[c] "nvidia" OR eventMessage CONTAINS[c] "nullmoth" OR eventMessage CONTAINS[c] "gsp")' 2>&1 \
     | tail -n 6000 > "$COLLECT/driver-kernel-log.txt"
+  log_status=${PIPESTATUS[0]}; echo "log show exit: $log_status" >> "$COLLECT/driver-kernel-log.txt"
+  # The current kernel message ring can retain early GSP/BAR failures absent from the log store.
+  { echo; echo "== current kernel message ring"; dmesg 2>&1 | grep -iE 'nvrm|nvaccel|nvidia|nullmoth|gsp' | tail -n 2000; } >> "$COLLECT/driver-kernel-log.txt"
+  # Release builds report failures to syslog rather than nvmtl.log. Debug builds may use either
+  # the system temp directory or the console user's temp directory.
+  log show --last 3d --style compact --predicate 'process != "kernel" AND (eventMessage CONTAINS[c] "NVMTL" OR eventMessage CONTAINS[c] "NullMoth" OR eventMessage CONTAINS[c] "nvk-reason")' 2>&1 \
+    | tail -n 3000 > "$COLLECT/driver-plugin-log.txt"
+  log_status=${PIPESTATUS[0]}; echo "log show exit: $log_status" >> "$COLLECT/driver-plugin-log.txt"
+  console_user=$(stat -f %Su /dev/console 2>/dev/null)
+  console_tmp=""
+  if [ -n "$console_user" ] && [ "$console_user" != root ] && [ "$console_user" != loginwindow ]; then
+    console_tmp=$(sudo -u "$console_user" getconf DARWIN_USER_TEMP_DIR 2>/dev/null)
+  fi
+  for f in /private/tmp/nvmtl.log "${console_tmp:+${console_tmp%/}/nvmtl.log}"; do
+    [ -f "$f" ] || continue
+    { echo; echo "== plugin file log"; tail -c 262144 "$f"; } >> "$COLLECT/driver-plugin-log.txt"
+  done
   for f in $(ls -t /Library/Logs/DiagnosticReports/*.panic 2>/dev/null | head -3); do cp "$f" "$COLLECT/macos-$(basename "$f").txt"; done
   n=0
   for d in $(diskutil list | awk '/ EFI | DOS_FAT_32 | Windows_FAT_32 | Microsoft Basic Data /{print $NF}' | grep -E '^disk[0-9]+s[0-9]+$'); do

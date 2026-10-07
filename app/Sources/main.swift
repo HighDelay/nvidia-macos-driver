@@ -8,10 +8,10 @@ import Metal
 import WebKit
 
 struct Package {
-    static let version = "1.0.2"
-    static let name = "nullmoth-nvidia-1.0.2.tar.gz"
-    static let url = URL(string: "https://github.com/nullmoth/nvidia-macos-driver/releases/download/v1.0.3/nullmoth-nvidia-1.0.2.tar.gz")!
-    static let sha256 = "90622d16c9c85b75ff478b8a33e9dd5cece02ec68f074795c0a29ce23c6302de"
+    static let version = "1.0.3"
+    static let name = "nullmoth-nvidia-1.0.3.tar.gz"
+    static let url = URL(string: "https://github.com/nullmoth/nvidia-macos-driver/releases/download/v1.0.5/nullmoth-nvidia-1.0.3.tar.gz")!
+    static let sha256 = "36c8544f646852dcd6d73a30c893c6b7bb56436ce1179445bdabf0ed5ad8a585"
 }
 let uploadPage = URL(string: "https://nullmothsystems.com/#send")!
 let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("NullMoth")
@@ -177,7 +177,7 @@ func redact(_ s: String) -> String {
     var t = s
     let user = NSUserName(), full = NSFullUserName()
     var exact: [String: String] = [:]
-    exact[NSHomeDirectory()] = "/Users/user"; exact["/Users/\(user)"] = "/Users/user"
+    exact[NSHomeDirectory()] = "[home]"; exact[URL(fileURLWithPath: "/Users").appendingPathComponent(user).path] = "[home]"
     for k in ["ComputerName", "LocalHostName", "HostName"] {
         let v = sh("/usr/sbin/scutil", ["--get", k]).trimmingCharacters(in: .whitespacesAndNewlines)
         if v.count > 2 { exact[v] = "this-mac" }
@@ -190,7 +190,7 @@ func redact(_ s: String) -> String {
     if user.count > 2 { exact[user] = "user" }
     for (k, v) in exact.sorted(by: { $0.key.count > $1.key.count }) { t = t.replacingOccurrences(of: k, with: v) }
     let rules: [(String, String)] = [
-        (#"/Users/[^/\s"']+"#, "/Users/user"),
+        (#"[/]Users[/][^/\s"']+"#, "[home]"),
         (#"\b[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\b"#, "[uuid]"),
         (#"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b"#, "[mac]"),
         (#"\b(?:\d{1,3}\.){3}\d{1,3}\b"#, "[ip]"),
@@ -465,6 +465,14 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
                 if writeReport(Array(crashes.prefix(3)), to: cr) { files.append(cr) }
             }
             var ids: [String] = [], errs: [String] = []
+            // Directory enumeration is unordered: a stick with many boot logs could crowd out
+            // the GPU state, kernel log, or crash report. Always send those first.
+            let important = ["driver-state.txt", "driver-kernel-log.txt", "driver-plugin-log.txt", "crash-report.txt", "collect.txt"]
+            files.sort {
+                let a = important.firstIndex(of: $0.lastPathComponent) ?? important.count
+                let b = important.firstIndex(of: $1.lastPathComponent) ?? important.count
+                return a == b ? $0.lastPathComponent < $1.lastPathComponent : a < b
+            }
             for f in files.prefix(12) {
                 guard var data = try? Data(contentsOf: f), !data.isEmpty else { continue }
                 data.removeAll { $0 == 0 }   // the site refuses a text log with NUL bytes (OpenCore pads its log file)

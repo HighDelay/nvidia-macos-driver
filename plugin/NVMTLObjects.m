@@ -4560,7 +4560,17 @@ destinationBytesPerImage:(NSUInteger)img options:(MTLBlitOption)opt {
 - (void)popDebugGroup {}
 - (void)encodeSignalEvent:(id<MTLEvent>)e value:(uint64_t)v { [self nvmtlRecordSignal:e value:v]; }
 - (void)encodeWaitForEvent:(id<MTLEvent>)e value:(uint64_t)v { [self nvmtlRecordWait:e value:v]; }
-- (BOOL)commitAndWaitUntilSubmitted { [self commit]; [self waitUntilScheduled]; return self.status != MTLCommandBufferStatusError; }
+// The display-pipe swap follows this call immediately in WindowServer. NVAccel
+// cannot order that swap after an NVK fence, so wait for the pixels to finish
+// before allowing the surface to become scanout. Other applications keep the
+// normal submission-only contract.
+- (BOOL)commitAndWaitUntilSubmitted {
+    static int ws = -1;
+    if (ws < 0) ws = (getprogname() && !strcmp(getprogname(), "WindowServer")) ? 1 : 0;
+    [self commit];
+    if (ws) [self waitUntilCompleted]; else [self waitUntilScheduled];
+    return self.status != MTLCommandBufferStatusError;
+}
 - (void)commit { [self nvmtlSubmitWithEvents]; }
 - (id<MTLComputeCommandEncoder>)computeCommandEncoder {
     NVMTLComputeCommandEncoder *e = [NVMTLComputeCommandEncoder new]; e->_cb = self; _nEnc++; return e;

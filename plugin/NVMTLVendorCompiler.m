@@ -22,10 +22,12 @@ void nvlog(const char *fmt, ...);
 #define NVMTL_STAGE_VERTEX   0x1011u
 #define NVMTL_STAGE_COMPUTE  0x1012u
 
+static bool nvmtl_vendor_chip_supported(void);
+
 static bool nvmtl_vendor_enabled(void) {
     static int on = -1;
     if (on < 0) on = getenv("NVMTL_VENDOR_COMPILER") ? 1 : 0;
-    return on == 1;
+    return on == 1 && nvmtl_vendor_chip_supported();
 }
 
 static const char *nvmtl_vendor_plugin_path(void) {
@@ -56,7 +58,9 @@ static const struct nvmtl_hwinfo *nvmtl_vendor_hwinfo(void) {
             { "TU1",   7, 5 },  { "GA100", 8, 0 },  { "GA10B", 8, 7 },  { "GA10", 8, 6 },
             { "GH100", 9, 0 },  { "AD10",  8, 9 },  { "GB10", 10, 0 },  { "GB20", 12, 0 },
         };
-        hw.sm_major = 12; hw.sm_minor = 0;
+        // Unknown hardware must use the regular NVK/NAK path. Guessing Blackwell
+        // here can produce cubins with instructions another GPU cannot execute.
+        hw.sm_major = 0; hw.sm_minor = 0;
         const char *vk = nvmtl_vk_device_name();
         const char *chip = vk ? strstr(vk, "(NVK ") : NULL;
         bool known = false;
@@ -68,10 +72,14 @@ static const struct nvmtl_hwinfo *nvmtl_vendor_hwinfo(void) {
                 }
         }
         if (known) nvlog("vendor-compiler: sm_%u%u read from the chip (%s)", hw.sm_major, hw.sm_minor, vk);
-        else       nvlog("vendor-compiler: chip not recognised in \"%s\" - ASSUMING sm_120, this lane may emit wrong cubins",
+        else       nvlog("vendor-compiler: REFUSED unknown chip in \"%s\"; using NVK/NAK",
                          vk ? vk : "(no vulkan name)");
     });
     return &hw;
+}
+
+static bool nvmtl_vendor_chip_supported(void) {
+    return nvmtl_vendor_hwinfo()->sm_major != 0;
 }
 
 static dispatch_data_t nvmtl_vendor_target_data(void) {

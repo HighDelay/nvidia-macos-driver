@@ -327,14 +327,21 @@ bool NVRM::start(IOService *provider)
         } else {
             fBootHold = 1; adjustBusy(1); setProperty("nvrm-boot-hold", "holding");
             if (thread_call_t cap = thread_call_allocate(&NVRM::bootHoldCap, this)) {
-                uint64_t dl; clock_interval_to_deadline(40000, kMillisecondScale, &dl);
+                // The BAR fallback settles for 100 s. A 40 s timer from start() expired before
+                // autoGo could run, so its display-arm CAS always failed on that path.
+                // Keep the 40 s bring-up budget, measured after the configured settling delay.
+                uint64_t dl, settle;
+                clock_interval_to_deadline(40000, kMillisecondScale, &dl);
+                clock_interval_to_absolutetime_interval(fAutoGoSettleMs, kMillisecondScale, &settle);
+                dl += settle;
                 retain(); thread_call_enter_delayed(cap, dl);
             } else { releaseBootHold("no cap timer — not holding"); }
             retain();
             if (kernel_thread_start(&NVRM::autoGo, this, &th) == KERN_SUCCESS) {
                 thread_deallocate(th);
-                setProperty("nvrm-autogo", bar1Placed ? "scheduled +10 s" : "scheduled +100 s");
-                LOG("auto-go: go(2) in %u ms on its own thread (BAR1 %s); registry held busy until the display is armed (cap 40 s)",
+                setProperty("nvrm-autogo-settle-ms", fAutoGoSettleMs, 32);
+                setProperty("nvrm-autogo", "scheduled");
+                LOG("auto-go: go(2) in %u ms on its own thread (BAR1 %s); registry held busy until the display is armed (cap settle + 40 s)",
                     fAutoGoSettleMs, bar1Placed ? "placed outside the console" : "not placed");
             } else {
                 release();
@@ -495,8 +502,8 @@ void NVRM::bootHoldCap(thread_call_param_t p0, thread_call_param_t)
 {
     NVRM *s = (NVRM *)p0;
     if (OSCompareAndSwap(1, 0, &s->fBootHold)) {
-        s->adjustBusy(-1); s->setProperty("nvrm-boot-hold", "CAP 40 s — bring-up not finished, NOT arming");
-        LOG("boot hold RELEASED by the 40 s cap — the bring-up will not arm with WindowServer up");
+        s->adjustBusy(-1); s->setProperty("nvrm-boot-hold", "CAP: settle + 40 s — bring-up not finished, NOT arming");
+        LOG("boot hold RELEASED by the settle + 40 s cap — the bring-up will not arm with WindowServer up");
     }
     s->release();
 }

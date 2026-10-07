@@ -1,13 +1,14 @@
 # NullMoth NVIDIA Driver for macOS
 
-A Metal driver for NVIDIA GeForce RTX cards on Intel Macs and OpenCore systems running **macOS 15 Sequoia**.
+A Metal driver for NVIDIA Turing-and-later cards on Intel Macs and OpenCore systems running **macOS 15 Sequoia**.
+The device table includes GTX 16, RTX 20/30/40/50, TITAN RTX, and supported Quadro/RTX workstation cards.
 Your NVIDIA card drives the desktop, Metal apps, games, Core ML/MPS, and OpenCL — the way an Apple-supported GPU does.
 
 Made by **NullMoth Systems**.
 
 Installing macOS from Windows? Use **1401**: https://github.com/nullmoth/1401
 
-> **This driver is new and may not work on every PC.** It is tested on an RTX 5060 under macOS 15.7.x. If your PC does
+> **This driver is new and may not work on every PC.** It is tested on an RTX 5060 under macOS 15.7.x and 15.8.1. Device-table coverage is broader than physical hardware validation; see [card support](docs/CARD-SUPPORT.md). If your PC does
 > not boot macOS with OpenCore yet, set that up first with the
 > [OpenCore Install Guide](https://dortania.github.io/OpenCore-Install-Guide/)
 > ([OpenCore releases](https://github.com/acidanthera/OpenCorePkg/releases)), then install the driver.
@@ -17,8 +18,8 @@ Support the work: https://buymeacoffee.com/nullmoth
 
 | | |
 |---|---|
-| macOS | 15 Sequoia (tested 15.7.x), x86_64 |
-| GPUs | NVIDIA GeForce RTX (GSP firmware generation); tested on an RTX 5060 |
+| macOS | 15 Sequoia (tested 15.7.x and 15.8.1), x86_64 |
+| GPUs | NVIDIA Turing and later from the GSP device table; physical validation: RTX 5060 |
 | Metal | Metal 3: argument buffers tier 2, ray tracing, mesh shaders, MPS, MetalFX path |
 | Also | OpenGL (through Apple's GL-on-Metal), OpenCL, Core Image, Core ML |
 
@@ -54,7 +55,7 @@ macOS asks you to **allow the extensions** in System Settings → Privacy & Secu
 
 ## 1401 Mac app (easiest)
 
-Download `1401-Mac-1.0.2.dmg` from **Releases**, open it, and run **1401** (the driver package is inside the disk
+Download the latest `1401-Mac-<version>.dmg` from **Releases**, open it, and run **1401** (the driver package is inside the disk
 image, so nothing else to download). Follow its four steps. It works on any OpenCore
 setup, whether 1401 built it or you did: it finds the OpenCore that started your Mac (in `EFI/OC` or `EFI/BOOT`, on an
 EFI or FAT32 partition), shows every change before making it, backs the config up, installs the driver, and adds
