@@ -65,6 +65,24 @@ on_usb() {      # true when the partition is on an external or removable disk (a
   diskutil info "$1" 2>/dev/null | grep -q -E 'Removable Media: *(Removable|Yes)|Device Location: *External|Protocol: *USB'; }
 bidx() { local i=0 p; while p=$(plutil -extract Kernel.Block.$i.Identifier raw -o - "$C" 2>/dev/null); do [ "$p" = com.apple.iokit.IONDRVSupport ] && { echo $i; return; }; i=$((i+1)); done; }
 
+# Copy newest files without splitting volume or file names at whitespace.
+collect_recent_logs() {
+  local prefix=$1 limit=$2 f i; shift 2
+  local recent=()
+  for f in "$@"; do
+    [ -f "$f" ] || continue
+    i=0
+    while [ $i -lt ${#recent[@]} ] && [ ! "$f" -nt "${recent[$i]}" ]; do i=$((i+1)); done
+    [ $i -lt "$limit" ] || continue
+    recent=("${recent[@]:0:$i}" "$f" "${recent[@]:$i}")
+    recent=("${recent[@]:0:$limit}")
+  done
+  for f in "${recent[@]}"; do
+    if cp "$f" "$COLLECT/$prefix-$(basename "$f")"; then n=$((n+1))
+    else note "could not copy diagnostic log: $f"; collection_errors=$((collection_errors+1)); fi
+  done
+}
+
 if [ -n "$COLLECT" ]; then
   # "Send logs": gather what only root can read into $COLLECT for the app to upload. Read-only on the system: it
   # copies files and prints state, and unmounts any EFI partition it mounted. Every OpenCore partition is checked,
@@ -94,6 +112,11 @@ if [ -n "$COLLECT" ]; then
   log_status=${PIPESTATUS[0]}; echo "log show exit: $log_status" >> "$COLLECT/driver-kernel-log.txt"
   # The current kernel message ring can retain early GSP/BAR failures absent from the log store.
   { echo; echo "== current kernel message ring"; dmesg 2>&1 | grep -iE 'nvrm|nvaccel|nvidia|nullmoth|gsp' | tail -n 2000; } >> "$COLLECT/driver-kernel-log.txt"
+  # Keep update/snapshot context separate so APFS traffic cannot crowd out GPU errors.
+  log show --last 3d --style compact --predicate '(process == "kernel" AND eventMessage CONTAINS[c] "apfs") OR process == "MobileSoftwareUpdate" OR process == "softwareupdated"' 2>&1 \
+    | tail -n 2000 > "$COLLECT/driver-update-log.txt"
+  log_status=${PIPESTATUS[0]}; echo "log show exit: $log_status" >> "$COLLECT/driver-update-log.txt"
+  { echo; echo "== current update message ring"; dmesg 2>&1 | grep -iE 'apfs|MobileSoftwareUpdate|softwareupdated' | tail -n 1000; } >> "$COLLECT/driver-update-log.txt"
   # Release builds report failures to syslog rather than nvmtl.log. Debug builds may use either
   # the system temp directory or the console user's temp directory.
   log show --last 3d --style compact --predicate 'process != "kernel" AND (eventMessage CONTAINS[c] "NVMTL" OR eventMessage CONTAINS[c] "NullMoth" OR eventMessage CONTAINS[c] "nvk-reason")' 2>&1 \
@@ -108,14 +131,19 @@ if [ -n "$COLLECT" ]; then
     [ -f "$f" ] || continue
     { echo; echo "== plugin file log"; tail -c 262144 "$f"; } >> "$COLLECT/driver-plugin-log.txt"
   done
-  for f in $(ls -t /Library/Logs/DiagnosticReports/*.panic 2>/dev/null | head -3); do cp "$f" "$COLLECT/macos-$(basename "$f").txt"; done
-  n=0
+  n=0; collection_errors=0
+  collect_recent_logs macos 3 /Library/Logs/DiagnosticReports/*.panic
+  # WindowServer can fail outside a driver frame. Include the complete recent reports
+  # during an explicit Send logs request; automatic crash notifications stay selective.
+  collect_recent_logs macos 3 /Library/Logs/DiagnosticReports/WindowServer*.ips /Library/Logs/DiagnosticReports/Retired/WindowServer*.ips
   for d in $(diskutil list | awk '/ EFI | DOS_FAT_32 | Windows_FAT_32 | Microsoft Basic Data /{print $NF}' | grep -E '^disk[0-9]+s[0-9]+$'); do
     mp=$(mount_efi "$d") || continue
-    for f in $(ls -t "$mp"/opencore-*.txt 2>/dev/null | head -3) $(ls -t "$mp"/panic-*.txt 2>/dev/null | head -5); do
-      cp "$f" "$COLLECT/$d-$(basename "$f")" && n=$((n+1)); done
+    collect_recent_logs "$d" 3 "$mp"/opencore-*.txt
+    collect_recent_logs "$d" 5 "$mp"/panic-*.txt
   done
-  chmod -R a+rX "$COLLECT"; ok "collected driver state and $n OpenCore/panic log(s)"; cleanup; echo "RESULT ok"; exit 0
+  chmod -R a+rX "$COLLECT"; ok "collected driver state and $n diagnostic log(s)"; cleanup
+  if [ "$collection_errors" -gt 0 ]; then note "$collection_errors diagnostic log(s) could not be copied"; echo "RESULT partial"; exit 1; fi
+  echo "RESULT ok"; exit 0
 fi
 
 if [ $REMOVE = 1 ]; then

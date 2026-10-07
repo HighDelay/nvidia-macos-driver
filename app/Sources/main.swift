@@ -442,7 +442,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
     func sendLogs() {
         let a = NSAlert()
         a.messageText = "Send logs to NullMoth"
-        a.informativeText = "1401 is sending this Mac's NullMoth logs to nullmothsystems.com so the problem can be found and fixed: what 1401 did, the driver's state, crash reports that name the driver, and OpenCore's startup logs. Your name, your Mac's name, serial numbers and addresses are removed first. macOS asks for your password so 1401 can read the startup logs."
+        a.informativeText = "1401 is sending this Mac's NullMoth logs to nullmothsystems.com so the problem can be found and fixed: what 1401 did, the driver's state, driver crash reports, recent WindowServer crash reports, update diagnostics, and OpenCore's startup logs. Your name, your Mac's name, serial numbers and addresses are removed first. macOS asks for your password so 1401 can read the startup logs."
         a.addButton(withTitle: "Send"); a.addButton(withTitle: "Cancel")
         guard a.runModal() == .alertFirstButtonReturn else { send("logsDone", ["ok": false, "why": "Not sent."]); return }
         DispatchQueue.global().async {
@@ -465,12 +465,13 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
                 if writeReport(Array(crashes.prefix(3)), to: cr) { files.append(cr) }
             }
             var ids: [String] = [], errs: [String] = []
+            if err != nil { errs.append("Some system logs could not be collected. See collect.txt for details.") }
             // Directory enumeration is unordered: a stick with many boot logs could crowd out
             // the GPU state, kernel log, or crash report. Always send those first.
-            let important = ["driver-state.txt", "driver-kernel-log.txt", "driver-plugin-log.txt", "crash-report.txt", "collect.txt"]
+            let important = ["driver-state.txt", "driver-kernel-log.txt", "driver-plugin-log.txt", "crash-report.txt", "collect.txt", "driver-update-log.txt"]
             files.sort {
-                let a = important.firstIndex(of: $0.lastPathComponent) ?? important.count
-                let b = important.firstIndex(of: $1.lastPathComponent) ?? important.count
+                let a = $0.lastPathComponent.hasPrefix("macos-WindowServer") ? 3 : (important.firstIndex(of: $0.lastPathComponent) ?? important.count)
+                let b = $1.lastPathComponent.hasPrefix("macos-WindowServer") ? 3 : (important.firstIndex(of: $1.lastPathComponent) ?? important.count)
                 return a == b ? $0.lastPathComponent < $1.lastPathComponent : a < b
             }
             for f in files.prefix(12) {

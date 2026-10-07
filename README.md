@@ -65,7 +65,7 @@ maps your USB ports and, if the driver ever crashes the Mac, offers to make a cr
 (it never sends anything on its own).
 
 **Something not working?** Open 1401 > Crash report > **Send logs to NullMoth**. It sends what 1401 did, the driver's
-state, crash reports that name the driver and OpenCore's startup logs (names, serial numbers and addresses removed), each
+state, driver crash reports, recent WindowServer crash reports and OpenCore's startup logs (names, serial numbers and addresses removed), each
 with a SHA-256 the site checks, and shows a report ID to quote in the NullMoth Discord.
 
 **macOS 26 Tahoe (beta):** the package carries a Tahoe build of NVAccel. Click **Prepare this Mac for Tahoe** before updating

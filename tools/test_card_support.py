@@ -72,11 +72,13 @@ int main(void){
 UPLOAD = r'''
 import Foundation
 var files=(0..<50).map { URL(fileURLWithPath: "old-\($0).txt") }
-files += ["crash-report.txt","driver-state.txt","driver-plugin-log.txt","collect.txt","driver-kernel-log.txt"].map {URL(fileURLWithPath:$0)}
+files += ["crash-report.txt","driver-state.txt","driver-plugin-log.txt","collect.txt","driver-kernel-log.txt","driver-update-log.txt"].map {URL(fileURLWithPath:$0)}
+files += (0..<3).map { URL(fileURLWithPath: "macos-WindowServer-\($0).ips.txt") }
             PRODUCTION
 let sent=Set(files.prefix(12).map { $0.lastPathComponent })
 assert(Set(important).isSubset(of:sent))
-print("PASS all 5 essential diagnostics survive 50 competing files")
+assert(Set((0..<3).map { "macos-WindowServer-\($0).ips.txt" }).isSubset(of:sent))
+print("PASS essential diagnostics and WindowServer reports survive 50 competing files")
 '''
 
 SUBMIT = r'''
