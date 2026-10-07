@@ -8,10 +8,10 @@ import Metal
 import WebKit
 
 struct Package {
-    static let version = "1.0.0"
-    static let name = "nullmoth-nvidia-1.0.0.tar.gz"
-    static let url = URL(string: "https://github.com/nullmoth/nvidia-macos-driver/releases/download/v1.0.0/nullmoth-nvidia-1.0.0.tar.gz")!
-    static let sha256 = "09c4ba6f852b269b8cc77c20f13e185cbcc584532b4fcba8e10d39d1c95e1b6a"
+    static let version = "1.0.1"
+    static let name = "nullmoth-nvidia-1.0.1.tar.gz"
+    static let url = URL(string: "https://github.com/nullmoth/nvidia-macos-driver/releases/download/v1.0.1/nullmoth-nvidia-1.0.1.tar.gz")!
+    static let sha256 = "69c07055292d24b8fe1bb0dfbfa6ce4e4e4c9fe54b1bf25a05b765c9314acec0"
 }
 let uploadPage = URL(string: "https://nullmothsystems.com/#send")!
 let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("NullMoth")
@@ -334,6 +334,11 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         case "usbStop": usbWatch(false)
         case "usbWrite": usbWrite(b["sel"] as? [String: [String: Int]] ?? [:], efi: b["efi"] as? String ?? "auto")
         case "crashReport": crashReportFromWindow()
+        case "sendLogs": sendLogs()
+        case "osupdate":
+            if b["cancel"] as? Bool ?? false { run(mode: "update", pkg: "", efi: b["efi"] as? String ?? "auto", extra: ["--update", "cancel"]) }
+            else { run(mode: "tahoe", pkg: b["pkg"] as? String ?? "", efi: b["efi"] as? String ?? "auto", extra: ["--update", "prepare"]) }   // installs or updates the driver, then prepares
+        case "swupdate": NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Software-Update-Settings.extension")!)
         case "verbose": run(mode: "verbose", pkg: "", efi: b["efi"] as? String ?? "auto", extra: ["--verbose", (b["on"] as? Bool ?? false) ? "on" : "off"])
         default: break
         }
@@ -429,6 +434,65 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         run(mode: "usbmap", pkg: "", efi: efi, extra: ["--usbmap", dir.deletingLastPathComponent().path])
     }
 
+    // "Send logs" (two clicks: the button, then Send). Collects 1401's own logs, the driver's state, a redacted crash
+    // report when the driver crashed, and - after macOS asks for the password - OpenCore's boot logs and saved panics
+    // from every OpenCore partition (sticks included). Every file is uploaded with its SHA-256, and the site refuses
+    // any upload whose bytes differ from it.
+    func sendLogs() {
+        let a = NSAlert()
+        a.messageText = "Send logs to NullMoth"
+        a.informativeText = "1401 is sending this Mac's NullMoth logs to nullmothsystems.com so the problem can be found and fixed: what 1401 did, the driver's state, crash reports that name the driver, and OpenCore's startup logs. Your name, your Mac's name, serial numbers and addresses are removed first. macOS asks for your password so 1401 can read the startup logs."
+        a.addButton(withTitle: "Send"); a.addButton(withTitle: "Cancel")
+        guard a.runModal() == .alertFirstButtonReturn else { send("logsDone", ["ok": false, "why": "Not sent."]); return }
+        DispatchQueue.global().async {
+            let fm = FileManager.default
+            let dir = fm.temporaryDirectory.appendingPathComponent("1401-logs-\(Int(Date().timeIntervalSince1970))")
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            let script = Bundle.main.resourceURL!.appendingPathComponent("nullmoth-setup.sh").path
+            let q = { (x: String) in "'" + x.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+            let cmd = "/bin/bash \(q(script)) --collect-logs \(q(dir.path)) > \(q(dir.appendingPathComponent("collect.txt").path)) 2>&1"
+            var err: NSDictionary?
+            NSAppleScript(source: "do shell script \"\(cmd.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\" with administrator privileges")?.executeAndReturnError(&err)
+            var files = ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
+            let mine = ((try? fm.contentsOfDirectory(at: logs, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
+                .sorted { ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) >
+                          ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) }
+            files += mine.prefix(5)
+            let crashes = driverCrashes(sinceInstallOnly: false)
+            if !crashes.isEmpty {
+                let cr = dir.appendingPathComponent("crash-report.txt")
+                if writeReport(Array(crashes.prefix(3)), to: cr) { files.append(cr) }
+            }
+            var ids: [String] = [], errs: [String] = []
+            for f in files.prefix(12) {
+                guard var data = try? Data(contentsOf: f), !data.isEmpty else { continue }
+                data.removeAll { $0 == 0 }   // the site refuses a text log with NUL bytes (OpenCore pads its log file)
+                let text = redact(String(decoding: data, as: UTF8.self))
+                let body = Data(text.utf8)
+                let sha = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+                var req = URLRequest(url: URL(string: "https://nullmothsystems.com/api/upload")!, timeoutInterval: 60)
+                req.httpMethod = "POST"; req.httpBody = body
+                req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+                let name = f.lastPathComponent.hasSuffix(".txt") || f.lastPathComponent.hasSuffix(".log") ? f.lastPathComponent : f.lastPathComponent + ".txt"
+                req.setValue(name.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "log.txt", forHTTPHeaderField: "X-File-Name")
+                let meta = try! JSONSerialization.data(withJSONObject: ["consent": true, "notes": "1401 Mac \(Package.version) logs (sent from the app)", "batch": "1401-mac"])
+                req.setValue(meta.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: ""), forHTTPHeaderField: "X-Meta")
+                req.setValue(sha, forHTTPHeaderField: "X-Content-SHA256")
+                let done = DispatchSemaphore(value: 0)
+                URLSession.shared.dataTask(with: req) { d, _, e in
+                    if let d = d, let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                        if let id = j["id"] as? String, (j["sha256"] as? String ?? sha) == sha { ids.append(id) }
+                        else { errs.append("\(name): \(j["error"] as? String ?? "refused")") }
+                    } else { errs.append("\(name): \(e?.localizedDescription ?? "no answer")") }
+                    done.signal()
+                }.resume()
+                _ = done.wait(timeout: .now() + 90)
+            }
+            try? fm.removeItem(at: dir)
+            DispatchQueue.main.async { self.send("logsDone", ["ok": !ids.isEmpty, "ids": ids, "errors": errs]) }
+        }
+    }
+
     func crashReportFromWindow() {
         let cr = driverCrashes(sinceInstallOnly: false)
         guard !cr.isEmpty else { send("crashDone", ["ok": false, "why": "No crash that names the driver was found."]); return }
@@ -449,11 +513,12 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         var args: [String]
         switch mode {
         case "remove": args = ["--remove"]
-        case "usbmap", "verbose": args = extra
+        case "usbmap", "verbose", "update": args = extra
         default:
             args = ["--pkg", pkg, "--sha", Package.sha256, "--tool", res.appendingPathComponent("NullMothSafe.efi").path,
                     "--app", Bundle.main.executablePath ?? ""]
             if mode == "dry" { args.append("--dry") }
+            args += extra
         }
         if mode != "remove", efi != "auto", !efi.isEmpty { args += ["--efi", efi] }
         let q = { (s: String) in "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }

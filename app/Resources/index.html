@@ -13,7 +13,7 @@
 
 <p class="tabs"><button type="button" class="b tab on" data-t="drv">NVIDIA driver</button> <button type="button" class="b tab" data-t="usb">USB ports</button> <button type="button" class="b tab" data-t="crash">Crash report</button></p>
 <div id="t-drv">
-<p class="panel">Works on any OpenCore setup running macOS 15, whether 1401 built it or you did. <b>Keep the USB stick or disk OpenCore started this Mac from plugged in</b>: 1401 changes the settings on that one. This driver is new and may not work on every PC; if your setup is not booting yet, start with the <a href="#" id="ocg">OpenCore Install Guide</a>.</p>
+<p class="panel">Works on any OpenCore setup running macOS 15, or macOS 26 Tahoe (beta), whether 1401 built it or you did. <b>Keep the USB stick or disk OpenCore started this Mac from plugged in</b>: 1401 changes the settings on that one. This driver is new and may not work on every PC; if your setup is not booting yet, start with the <a href="#" id="ocg">OpenCore Install Guide</a>.</p>
 <table class="pc" border="1" cellspacing="2" cellpadding="3"><caption>This Mac:</caption><tbody id="mac"><tr><th>Looking...</th><td>one second</td></tr></tbody></table>
 
 <div id="verdict" class="panel"></div>
@@ -35,6 +35,9 @@
 <div class="panel"><p class="sh">If something goes wrong after you restart</p>
 <p>Restart, and in the OpenCore boot picker choose <b>1401: Remove NVIDIA driver</b>, then your macOS disk. 1401 removes the driver by itself and restarts; this Mac comes back exactly as it was before the install, OpenCore config included. The screen may stay dark until that second restart.</p>
 <p><button type="button" class="b" id="rm">Remove the driver</button></p></div>
+<div class="panel"><p class="sh">Update to macOS 26 Tahoe (beta)</p>
+<p>One click: <b>Prepare this Mac for Tahoe</b> installs or updates the NVIDIA driver to this version (it carries the Tahoe driver too), then gets the Mac ready for the update: the driver is parked and the installer gets the small GPU BAR it needs, so the update runs on the plain startup screen. Then update in System Settings. The first start of Tahoe sets the driver up and restarts once by itself; the screen can stay dark for a minute while it does. Keep the OpenCore stick or disk plugged in the whole time.</p>
+<p><button type="button" class="b" id="upd">Prepare this Mac for Tahoe</button> <button type="button" class="b" id="swu" hidden>Open Software Update</button> <button type="button" class="b" id="updc">Cancel the Tahoe preparation</button></p></div>
 <div class="panel"><p class="sh">Startup text (verbose mode)</p>
 <p>Shows what macOS is doing while it starts instead of the Apple logo. Useful if a start hangs. Takes effect at the next restart.</p>
 <p><button type="button" class="b" id="vbon">Turn verbose on</button> <button type="button" class="b" id="vboff">Turn verbose off</button></p></div>
@@ -58,12 +61,15 @@
 <p>If the NVIDIA driver ever crashes this Mac, 1401 asks the next time you log in whether to make a report. You can also make one here.</p>
 <p>The report is a text file on your Desktop with your hardware (CPU, graphics, memory, macOS version) and what failed. 1401 takes out your name, your Mac's name, serial numbers, network addresses and file paths. Read it, then upload it on the NullMoth site if you want to. <b>1401 never sends anything by itself.</b></p>
 <p id="cr"></p>
-<p><button type="button" class="b" id="mk">Make a report</button> <button type="button" class="b" id="up">Open the upload page</button></p></div>
+<p><button type="button" class="b" id="mk">Make a report</button> <button type="button" class="b" id="up">Open the upload page</button></p>
+<p class="sh">Something not working?</p>
+<p><button type="button" class="b" id="sl">Send logs to NullMoth</button> 1401 sends what it did, the driver's state, crash reports and OpenCore's startup logs (names, serial numbers and addresses removed). You get a report ID to quote in the NullMoth Discord.</p>
+<p id="slr"></p></div>
 </div>
 
 <center class="foot">
 <hr width="80%">
-<p class="badges" aria-hidden="true"><span class="bd bd1">1401</span><span class="bd bd2">MADE FOR<br>macOS 15</span><span class="bd bd3">NO COOKIES<br>NO TRACKING</span><span class="bd bd4">FREE<br>FOREVER</span></p>
+<p class="badges" aria-hidden="true"><span class="bd bd1">1401</span><span class="bd bd2">MADE FOR<br>macOS 15 + 26</span><span class="bd bd3">NO COOKIES<br>NO TRACKING</span><span class="bd bd4">FREE<br>FOREVER</span></p>
 <p class="counter">You are visitor number <b>000001</b> (it's only ever you &mdash; nothing here leaves this Mac)</p>
 <p>Driver <span id="ver"></span> &middot; <a href="#" id="src">source code</a><br>© 2026 NullMoth Systems<br>NullMoth and the moth logo are trademarks of NullMoth Systems.</p>
 </center>

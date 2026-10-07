@@ -32,6 +32,7 @@ static void               nvAccelWriteStamp(int index, unsigned int value);
 #include <libkern/c++/OSSymbol.h>
 #include "nvrm_vram_abi.h"
 #include <IOKit/IODeviceMemory.h>
+#include "tahoe_fwd.h"   // macOS 26: inherited slots Apple no longer exports, forwarded through its vtables
 #include "nvaccel_stubs.h"
 #include "nvkms-kapi.h"
 #include <sys/sysctl.h>
@@ -51,6 +52,7 @@ extern "C" kern_return_t _stop(kmod_info_t *ki, void *d)  { return KERN_SUCCESS;
 
 class NVEventMachine : public IOAccelEventMachineFast2 {
     OSDeclareDefaultStructors(NVEventMachine)
+    NM_TAHOE_FWD(NVEventMachine)
 public:
     void writeStamp(int s, vendevtCommandRec *r, unsigned int v) APPLE_KEXT_OVERRIDE {
         (void)r;
@@ -69,6 +71,7 @@ static int gNvScanout = 0;
 static int gNvAperture = 0;
 class NVDisplayMachine : public IOAccelLegacyDisplayMachine {
     OSDeclareDefaultStructors(NVDisplayMachine)
+    NM_TAHOE_FWD(NVDisplayMachine)
 public:
     bool displayModeWillChange() APPLE_KEXT_OVERRIDE { ALOG("DM displayModeWillChange"); return true; }
     bool displayModeDidChange() APPLE_KEXT_OVERRIDE {
@@ -82,6 +85,7 @@ OSDefineMetaClassAndStructors(NVDisplayMachine, IOAccelLegacyDisplayMachine)
 #define NV_PRIVATE_VA_SIZE  0x000010000000ull
 class NVTask : public IOAccelTask {
     OSDeclareDefaultStructors(NVTask)
+    NM_TAHOE_FWD(NVTask)
 public:
     IORangeAllocator *fVa = nullptr;
     unsigned fAllocLogged = 0, fPrivate = 0;
@@ -101,6 +105,7 @@ public:
 OSDefineMetaClassAndStructors(NVTask, IOAccelTask)
 class NVMemoryMap : public IOAccelMemoryMap {
     OSDeclareDefaultStructors(NVMemoryMap)
+    NM_TAHOE_FWD(NVMemoryMap)
 public:
     IOAccelMemory     *fMem       = nullptr;
     unsigned int       fHVirt     = 0;
@@ -134,6 +139,7 @@ OSDefineMetaClassAndStructors(IOAccelNVRMCarrier, IOService)
 
 class NVAccel : public IOGraphicsAccelerator2 {
     OSDeclareDefaultStructors(NVAccel)
+    NM_TAHOE_FWD(NVAccel)
     IOAccelNVRMCarrier *fCarriers[NV_CARRIERS] = { nullptr };
     unsigned            fCarrierNext = 0;
     unsigned            fCarrierLogged = 0;
@@ -1761,3 +1767,5 @@ IOReturn NVAccel::callPlatformFunction(const OSSymbol *fn, bool wait, void *p1, 
         return nvAccelSurfVram((struct NVRMSurfShareEsc *)p1, (task_t)p2, (unsigned)(uintptr_t)p3);
     return IOService::callPlatformFunction(fn, wait, p1, p2, p3, p4);
 }
+
+NM_TAHOE_FWD_DEFS

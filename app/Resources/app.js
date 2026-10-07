@@ -13,7 +13,7 @@ function render(m) {
   const card = m.gpus.find((g) => g.supported) || m.gpus.find((g) => g.vendor === "10DE");
   const on = m.kexts >= 4 && m.metal.some((n) => /NVIDIA|GeForce|RTX/i.test(n));
   $("mac").innerHTML =
-    row("macOS", esc(m.macos) + (m.major === 15 ? "" : ' <span class="bad">(the driver is for macOS 15)</span>')) +
+    row("macOS", esc(m.macos) + ([15, 26].includes(m.major) ? "" : ' <span class="bad">(the driver is for macOS 15 and 26)</span>')) +
     row("Processor", m.arch === "x86_64" && !m.translated ? "Intel (x86_64)" : '<span class="bad">Apple silicon - this driver is for Intel Macs and PCs</span>') +
     row("Graphics", m.gpus.length ? m.gpus.map((g) => esc(g.name) + (g.supported ? (g.tested ? ' <span class="good">supported, tested</span>' : ' <span class="warn">supported by NVIDIA, not tested yet</span>') : g.vendor === "10DE" ? ' <span class="bad">not supported (needs RTX 20 series or newer)</span>' : "")).join("<br>") : "none found") +
     row("OpenCore", m.opencore ? esc(m.opencore) : '<span class="warn">not detected</span>') +
@@ -21,12 +21,15 @@ function render(m) {
 
   let why = "";
   if (m.arch !== "x86_64" || m.translated) why = "This Mac has Apple silicon. Its own graphics are already Apple's.";
-  else if (m.major !== 15) why = `The driver is built for macOS 15 Sequoia; this Mac runs ${esc(m.macos)}.`;
+  else if (![15, 26].includes(m.major)) why = `The driver is built for macOS 15 Sequoia and macOS 26 Tahoe (beta); this Mac runs ${esc(m.macos)}.`;
   else if (!card || !card.supported) why = "No supported NVIDIA card was found. The driver needs a GeForce RTX 20 series or newer.";
   else if (!m.opencore) why = "This Mac does not report OpenCore. The driver's settings live in OpenCore's config, so 1401 will not install without it.";
 
+  // the driver package on this disk image: the Tahoe button needs it even when the driver is already running
+  const pk = m.packages.find((p) => p.ok === "yes"); if (pk) S.pkg = pk.path;
+  $("upd").disabled = !S.pkg;
   if (on) {
-    $("verdict").innerHTML = `<p class="good">Your ${esc(card ? card.name : "NVIDIA card")} is running on the NullMoth driver.</p><p>Nothing to do. If you ever want it gone, use Remove the driver below.</p>`;
+    $("verdict").innerHTML = `<p class="good">Your ${esc(card ? card.name : "NVIDIA card")} is running on the NullMoth driver.</p><p>Nothing to do. To move to macOS 26 Tahoe, use Prepare this Mac for Tahoe below. If you ever want the driver gone, use Remove the driver below.</p>`;
     $("steps").hidden = true; return;
   }
   if (why) { $("verdict").innerHTML = `<p class="bad">Can't install here.</p><p>${why}</p>`; $("steps").hidden = true; return; }
@@ -69,6 +72,7 @@ const NM = {
       if (busy) { $("logwrap").hidden = false; $("log").textContent = ""; return; }
       if (data.state === "cancelled") { logLine("NOTE cancelled - nothing was changed"); post({ act: "scan" }); return; }
       if (data.mode === "dry" && data.ok) { S.previewed = true; step(2, "done"); step(3, "now"); }
+      if (data.mode === "tahoe" && data.ok) { $("swu").hidden = false; logLine("OK ready for Tahoe - click Open Software Update and install macOS 26"); }
       if (data.mode === "install" && data.ok) { S.installed = true; step(3, "done"); step(4, "now"); $("rs").disabled = false; }
       post({ act: "scan" });
     }
@@ -83,6 +87,9 @@ $("dry").onclick = () => post({ act: "run", mode: "dry", pkg: S.pkg, efi: efi() 
 $("go").onclick = () => post({ act: "run", mode: "install", pkg: S.pkg, efi: efi() });
 $("rm").onclick = () => { if (confirm("Remove the NullMoth driver and put your OpenCore config back the way it was?")) post({ act: "run", mode: "remove", pkg: "", efi: efi() }); };
 $("rs").onclick = () => post({ act: "restart" });
+$("upd").onclick = () => post({ act: "osupdate", cancel: false, pkg: S.pkg, efi: efi() });
+$("swu").onclick = () => post({ act: "swupdate" });
+$("updc").onclick = () => post({ act: "osupdate", cancel: true, efi: efi() });
 $("vbon").onclick = () => post({ act: "verbose", on: true, efi: efi() });
 $("vboff").onclick = () => post({ act: "verbose", on: false, efi: efi() });
 $("priv").onclick = (e) => { e.preventDefault(); post({ act: "privacy" }); };
@@ -122,6 +129,7 @@ function usbRender() {
 $("uw").onclick = () => { U.pick = {}; U.off = new Set(); post({ act: "usbStart" }); $("uw").textContent = "Watching..."; $("uw").disabled = true; };
 $("uwr").onclick = () => { $("uerr").textContent = ""; post({ act: "usbStop" }); post({ act: "usbWrite", sel: U.pick, efi: efi() }); };
 $("mk").onclick = () => post({ act: "crashReport" });
+$("sl").onclick = () => { $("sl").disabled = true; $("slr").textContent = "Collecting and sending..."; post({ act: "sendLogs" }); };
 $("up").onclick = () => post({ act: "open", url: "https://nullmothsystems.com/#send" });
 const prevOn = NM.on;
 NM.on = (m) => {
@@ -134,6 +142,13 @@ NM.on = (m) => {
     usbRender(); return;
   }
   if (m.event === "usbErr") { $("uerr").textContent = m.data; return; }
+  if (m.event === "logsDone") {
+    const d = m.data;
+    $("sl").disabled = false;
+    $("slr").innerHTML = d.ok ? `<span class="good">Sent. Report ID ${esc(d.ids.join(", "))}</span> - quote it when you ask for help.` + (d.errors.length ? `<br><span class="warn">Not sent: ${esc(d.errors.join("; "))}</span>` : "")
+                              : `<span class="warn">${esc(d.why || ("Nothing was sent: " + (d.errors || []).join("; ")))}</span>`;
+    return;
+  }
   if (m.event === "crashDone") { $("cr").innerHTML = m.data.ok ? `<span class="good">Saved to your Desktop:</span> ${esc(m.data.path.split("/").pop())}` : `<span class="warn">${esc(m.data.why)}</span>`; return; }
   if (m.event === "scan" && m.data.crashes) $("cr").textContent = m.data.crashes.length ? `${m.data.crashes.length} crash file(s) on this Mac name the driver.` : "No crash that names the driver is on this Mac.";
   if (m.event === "scan" && m.data.safemode && m.data.record) {

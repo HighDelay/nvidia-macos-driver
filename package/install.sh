@@ -16,7 +16,12 @@ step() { echo; echo "== $*"; }; ok() { echo "   ok  $*"; }; die() { echo "   STO
 [ "$(id -u)" -eq 0 ] || die "run with sudo"
 step "1. this Mac"
 [ "$(uname -m)" = x86_64 ] || die "Intel/x86_64 only"
-v=$(sw_vers -productVersion); [ "${v%%.*}" = 15 ] || die "macOS 15 required (this is $v)"
+v=$(sw_vers -productVersion); MAJ=${v%%.*}
+case $MAJ in 15|26) ;; *) die "macOS 15 or 26 required (this is $v)";; esac
+# NVAccel is the one kext built per macOS: Tahoe made the IOAcceleratorFamily2 methods it inherits private (see
+# kexts/NVRM/accel/gen_tahoe_fwd.py). The other three kexts are the same binaries on 15 and 26.
+VAR="$HERE/Library/NullMoth/kexts/$MAJ"; [ -d "$VAR/NVAccel.kext" ] || die "this package has no NVAccel for macOS $MAJ"
+kpath() { [ "$1" = NVAccel ] && echo "$VAR/NVAccel.kext" || echo "$HERE/Library/Extensions/$1.kext"; }
 ioreg -r -c IOPCIDevice -d 1 | grep -q '"vendor-id" = <de100000>' || die "no NVIDIA GPU found on PCI"
 ok "macOS $v, x86_64, NVIDIA GPU present"
 
@@ -27,7 +32,9 @@ ok "every file matches SHA256SUMS"
 step "3. test kernel collection"
 T=$(mktemp -d /var/tmp/nullmoth.XXXX); mkdir -p "$T/repo"
 for x in "$EXT"/*.kext; do n=$(basename "$x" .kext); case " $KEXTS " in *" $n "*) ;; *) cp -R "$x" "$T/repo/";; esac; done
-for k in $KEXTS; do cp -R "$HERE/Library/Extensions/$k.kext" "$T/repo/" || die "copy $k"; done
+for k in $KEXTS; do cp -R "$(kpath $k)" "$T/repo/" || die "copy $k"; done
+# macOS 26 kmutil silently skips kexts not owned by root ("No binaries or codeless kexts were provided").
+chown -R root:wheel "$T/repo"; chmod -R go-w "$T/repo"
 kmutil create -n aux --volume-root / ${KARG[@]+"${KARG[@]}"} -B $KB -S $KS --repository "$T/repo" -A "$T/aux.kc" -z >"$T/kmutil.log" 2>&1
 INS=$(kmutil inspect -a x86_64 -A "$T/aux.kc" 2>/dev/null)
 for k in $KEXTS; do echo "$INS" | grep -q "com.nullmoth.$k" || { tail -20 "$T/kmutil.log"; die "kmutil refused com.nullmoth.$k (log above)"; }; done
@@ -42,7 +49,10 @@ for b in NVMTLDriver.bundle NVIDIAShared.bundle nvmtl nvmtl-allow.txt; do [ -e "
 ok "backup written"
 
 step "5. install"
-for k in $KEXTS; do rm -rf "$EXT/$k.kext"; ditto "$HERE/Library/Extensions/$k.kext" "$EXT/$k.kext" || die "copy $k (restore from $BK)"; done
+for k in $KEXTS; do rm -rf "$EXT/$k.kext"; ditto "$(kpath $k)" "$EXT/$k.kext" || die "copy $k (restore from $BK)"; done
+# both NVAccel builds stay on disk, so the first start after a macOS upgrade can switch to the matching one
+mkdir -p /Library/NullMoth && rm -rf /Library/NullMoth/kexts && ditto "$HERE/Library/NullMoth/kexts" /Library/NullMoth/kexts
+echo "$MAJ" > /Library/NullMoth/os-major
 mkdir -p "$GB" "$FW"
 for b in NVMTLDriver.bundle NVIDIAShared.bundle nvmtl; do rm -rf "$GB/$b"; ditto "$HERE/Library/GPUBundles/$b" "$GB/$b" || die "copy $b (restore from $BK)"; done
 cp "$HERE/Library/GPUBundles/nvmtl-allow.txt" "$GB/"

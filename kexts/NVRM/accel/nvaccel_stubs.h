@@ -16,6 +16,7 @@
 #include "IOAccelVideoContext2.h"
 class NVResource : public IOAccelResource2 {
     OSDeclareDefaultStructors(NVResource)
+    NM_TAHOE_FWD(NVResource)
 public:
     unsigned int fPbLogged = 0;
     void rebuildPagingBuffer() APPLE_KEXT_OVERRIDE { if (fPbLogged < 4) { fPbLogged++; ALOG("NVResource::rebuildPagingBuffer -- nothing to rebuild until there are page tables (rung 5)"); } }
@@ -55,11 +56,13 @@ public:
 OSDefineMetaClassAndStructors(NVResource, IOAccelResource2)
 class NVSysMemory : public IOAccelSysMemory {
     OSDeclareDefaultStructors(NVSysMemory)
+    NM_TAHOE_FWD(NVSysMemory)
 public:
 };
 OSDefineMetaClassAndStructors(NVSysMemory, IOAccelSysMemory)
 class NVVidMemory : public IOAccelVidMemory {
     OSDeclareDefaultStructors(NVVidMemory)
+    NM_TAHOE_FWD(NVVidMemory)
 public:
     void              *fRmHandle = nullptr;
     void              *fKva      = nullptr;
@@ -80,6 +83,7 @@ public:
 OSDefineMetaClassAndStructors(NVVidMemory, IOAccelVidMemory)
 class NVSurface : public IOAccelLegacySurface {
     OSDeclareDefaultStructors(NVSurface)
+    NM_TAHOE_FWD(NVSurface)
 public:
     void setSyncCommand(unsigned int* a0, unsigned int& a1, unsigned int& a2, _AMDSurfaceSwapSyncOptions const& a3) const APPLE_KEXT_OVERRIDE { ALOG("NVSurface::setSyncCommand"); }
     void _pure335() APPLE_KEXT_OVERRIDE { ALOG("NVSurface::_pure335"); }
@@ -122,6 +126,7 @@ public:
 OSDefineMetaClassAndStructors(NVSurface, IOAccelLegacySurface)
 class NVDisplayPipe : public IOAccelLegacyDisplayPipe {
     OSDeclareDefaultStructors(NVDisplayPipe)
+    NM_TAHOE_FWD(NVDisplayPipe)
 public:
     IOAccelMemory *initFramebufferResource(unsigned int index, IOAccelResource2 *res) APPLE_KEXT_OVERRIDE;
     IOReturn validateTransaction(IOAccelDisplayPipeTransaction2 *txn) APPLE_KEXT_OVERRIDE;
@@ -137,6 +142,7 @@ public:
 OSDefineMetaClassAndStructors(NVDisplayPipe, IOAccelLegacyDisplayPipe)
 class NVGLContext : public IOAccelGLContext2 {
     OSDeclareDefaultStructors(NVGLContext)
+    NM_TAHOE_FWD(NVGLContext)
 public:
     void _pure362() APPLE_KEXT_OVERRIDE { ALOG("NVGLContext::_pure362"); }
     void _pure363() APPLE_KEXT_OVERRIDE { ALOG("NVGLContext::_pure363"); }
@@ -146,6 +152,7 @@ public:
 OSDefineMetaClassAndStructors(NVGLContext, IOAccelGLContext2)
 class NV2DContext : public IOAccel2DContext2 {
     OSDeclareDefaultStructors(NV2DContext)
+    NM_TAHOE_FWD(NV2DContext)
 public:
     void _pure362() APPLE_KEXT_OVERRIDE { ALOG("NV2DContext::_pure362"); }
     void _pure363() APPLE_KEXT_OVERRIDE { ALOG("NV2DContext::_pure363"); }
@@ -153,11 +160,13 @@ public:
 OSDefineMetaClassAndStructors(NV2DContext, IOAccel2DContext2)
 class NVCLContext : public IOAccelCLContext2 {
     OSDeclareDefaultStructors(NVCLContext)
+    NM_TAHOE_FWD(NVCLContext)
 public:
 };
 OSDefineMetaClassAndStructors(NVCLContext, IOAccelCLContext2)
 class NVVideoContext : public IOAccelVideoContext2 {
     OSDeclareDefaultStructors(NVVideoContext)
+    NM_TAHOE_FWD(NVVideoContext)
 public:
 };
 OSDefineMetaClassAndStructors(NVVideoContext, IOAccelVideoContext2)

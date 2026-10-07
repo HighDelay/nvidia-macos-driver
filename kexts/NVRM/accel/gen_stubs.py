@@ -23,7 +23,7 @@ for cls, chain in spec:
             key=(n,re.sub(r"\s+","",a))
             if not p: implemented.add(key)
             elif key not in implemented and key not in [(x[1],re.sub(r"\s+","",x[2])) for x in pending]: pending.append((t,n,a,c))
-    code.append("class %s : public %s {\n    OSDeclareDefaultStructors(%s)\npublic:" % (cls, chain[0], cls))
+    code.append("class %s : public %s {\n    OSDeclareDefaultStructors(%s)\n    NM_TAHOE_FWD(%s)\npublic:" % (cls, chain[0], cls, cls))
     for t,n,a,c in pending:
         args=[x.strip() for x in a.split(",")] if a.strip() else []
         named=", ".join("%s a%d"%(x,i) for i,x in enumerate(args))
