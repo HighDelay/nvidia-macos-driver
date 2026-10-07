@@ -66,9 +66,17 @@ const NM = {
       if (data.state === "error") $("dlp").innerHTML = `<span class="bad">${esc(data.why)}</span>`;
       if (data.state === "done") { $("dlp").textContent = "done, checksum OK"; post({ act: "scan" }); }
     }
+    if (event === "upd") {
+      if (data.state === "error") { $("updr").innerHTML = `<span class="bad">${esc(data.why)}</span>`; $("upddrv").hidden = true; }
+      if (data.state === "checked") {
+        const have = data.installed ? `installed ${esc(data.installed)}, ` : "";
+        $("updr").innerHTML = data.newer ? `${have}newest ${esc(data.latest)} - ready to update.` : `${have}you have the newest driver (${esc(data.latest)}).`;
+        $("upddrv").hidden = !data.newer;
+      }
+    }
     if (event === "run") {
       const busy = data.state === "start";
-      ["dry", "go", "rm", "dl"].forEach((b) => ($(b).disabled = busy));
+      ["dry", "go", "rm", "dl", "updchk", "upddrv"].forEach((b) => ($(b).disabled = busy));
       if (busy) { $("logwrap").hidden = false; $("log").textContent = ""; return; }
       if (data.state === "cancelled") { logLine("NOTE cancelled - nothing was changed"); post({ act: "scan" }); return; }
       if (data.mode === "dry" && data.ok) { S.previewed = true; step(2, "done"); step(3, "now"); }
@@ -82,6 +90,8 @@ window.NM = NM;
 
 const efi = () => ($("efirow").hidden ? "auto" : $("efi").value);
 $("dl").onclick = () => post({ act: "download" });
+$("updchk").onclick = () => { $("updr").textContent = "Checking..."; post({ act: "checkUpdate" }); };
+$("upddrv").onclick = () => { $("upddrv").disabled = true; $("updr").textContent = "Downloading the newest driver..."; post({ act: "updateDriver", efi: efi() }); };
 $("ocg").onclick = (e) => { e.preventDefault(); post({ act: "open", url: "https://dortania.github.io/OpenCore-Install-Guide/" }); };
 $("dry").onclick = () => post({ act: "run", mode: "dry", pkg: S.pkg, efi: efi() });
 $("go").onclick = () => post({ act: "run", mode: "install", pkg: S.pkg, efi: efi() });

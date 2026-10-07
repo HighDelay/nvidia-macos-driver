@@ -325,6 +325,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         switch act {
         case "scan": DispatchQueue.global().async { self.send("scan", self.scan()) }
         case "download": download()
+        case "checkUpdate": checkUpdate()
+        case "updateDriver": updateDriver(efi: b["efi"] as? String ?? "auto")
         case "run": run(mode: b["mode"] as? String ?? "dry", pkg: b["pkg"] as? String ?? "", efi: b["efi"] as? String ?? "auto", extra: [])
         case "restart": NSAppleScript(source: "tell application \"System Events\" to restart")?.executeAndReturnError(nil)
         case "privacy": NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Security")!)
@@ -383,7 +385,58 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         }
     }
 
+    // "Update driver": the newest driver release, not the version this app was built with. The package is checked against
+    // the SHA256SUMS.txt published in the same release and installed by the normal install path (backup, OpenCore checks).
+    var dlName = Package.name, dlSha = Package.sha256
+    var dlThenInstall: String? = nil
+    var latest: (version: String, name: String, url: URL, sha: String)? = nil
+    static func versionKey(_ v: String) -> [Int] { v.split(separator: ".").map { Int($0) ?? 0 } }
+    static func newer(_ a: String, than b: String) -> Bool {
+        let x = versionKey(a), y = versionKey(b)
+        for i in 0..<max(x.count, y.count) { let p = i < x.count ? x[i] : 0, q = i < y.count ? y[i] : 0; if p != q { return p > q } }
+        return false
+    }
+    func installedDriverVersion() -> String {
+        (try? String(contentsOfFile: "/Library/NullMoth/driver-version", encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+    func checkUpdate() {
+        let api = URL(string: "https://api.github.com/repos/nullmoth/nvidia-macos-driver/releases/latest")!
+        var rq = URLRequest(url: api); rq.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept"); rq.timeoutInterval = 30
+        URLSession.shared.dataTask(with: rq) { data, resp, err in
+            let fail: (String) -> Void = { self.send("upd", ["state": "error", "why": $0]) }
+            guard err == nil, (resp as? HTTPURLResponse)?.statusCode == 200, let data,
+                  let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let assets = j["assets"] as? [[String: Any]] else { return fail("could not reach the release list (\(err?.localizedDescription ?? "HTTP \((resp as? HTTPURLResponse)?.statusCode ?? 0)"))") }
+            var pkg: (String, String, URL)? = nil; var sums: URL? = nil
+            for a in assets {
+                guard let n = a["name"] as? String, let u = (a["browser_download_url"] as? String).flatMap(URL.init(string:)), u.scheme == "https" else { continue }
+                if n == "SHA256SUMS.txt" { sums = u }
+                if let m = n.range(of: #"^nullmoth-nvidia-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.gz$"#, options: .regularExpression) {
+                    pkg = (String(n[m].dropFirst("nullmoth-nvidia-".count).dropLast(".tar.gz".count)), n, u)
+                }
+            }
+            guard let pkg, let sums else { return fail("the latest release has no driver package or no SHA256SUMS.txt") }
+            URLSession.shared.dataTask(with: sums) { sd, sr, se in
+                guard se == nil, (sr as? HTTPURLResponse)?.statusCode == 200, let sd, let txt = String(data: sd, encoding: .utf8) else { return fail("could not read SHA256SUMS.txt") }
+                let sha = txt.split(separator: "\n").compactMap { l -> String? in
+                    let f = l.split(whereSeparator: { $0 == " " || $0 == "\t" }); return f.count >= 2 && f.last.map(String.init) == pkg.1 ? String(f[0]).lowercased() : nil }.first ?? ""
+                guard sha.count == 64 else { return fail("SHA256SUMS.txt does not list \(pkg.1)") }
+                self.latest = (pkg.0, pkg.1, pkg.2, sha)
+                let have = self.installedDriverVersion()
+                self.send("upd", ["state": "checked", "latest": pkg.0, "installed": have,
+                                  "newer": have.isEmpty || App.newer(pkg.0, than: have)])
+            }.resume()
+        }.resume()
+    }
+    func updateDriver(efi: String) {
+        guard let l = latest else { send("upd", ["state": "error", "why": "check for an update first"]); return }
+        dlName = l.name; dlSha = l.sha; dlThenInstall = efi
+        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        URLSession(configuration: .default, delegate: self, delegateQueue: nil).downloadTask(with: l.url).resume()
+        send("dl", ["state": "start"])
+    }
     func download() {
+        dlName = Package.name; dlSha = Package.sha256; dlThenInstall = nil
         try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         URLSession(configuration: .default, delegate: self, delegateQueue: nil).downloadTask(with: Package.url).resume()
         send("dl", ["state": "start"])
@@ -393,12 +446,13 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
     }
     func urlSession(_ s: URLSession, downloadTask t: URLSessionDownloadTask, didFinishDownloadingTo loc: URL) {
         let code = (t.response as? HTTPURLResponse)?.statusCode ?? 0
-        let dst = support.appendingPathComponent(Package.name)
+        let dst = support.appendingPathComponent(dlName)
         guard code == 200 else { send("dl", ["state": "error", "why": "the server answered HTTP \(code)"]); return }
-        guard sha256(loc) == Package.sha256 else { send("dl", ["state": "error", "why": "the download does not match its SHA-256, so it was thrown away"]); return }
+        guard sha256(loc) == dlSha else { send("dl", ["state": "error", "why": "the download does not match its SHA-256, so it was thrown away"]); return }
         try? FileManager.default.removeItem(at: dst)
         do { try FileManager.default.moveItem(at: loc, to: dst) } catch { send("dl", ["state": "error", "why": error.localizedDescription]); return }
         send("dl", ["state": "done", "path": dst.path])
+        if let efi = dlThenInstall { dlThenInstall = nil; DispatchQueue.main.async { self.run(mode: "install", pkg: dst.path, efi: efi, extra: []) } }
     }
     func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError e: Error?) {
         if let e { send("dl", ["state": "error", "why": e.localizedDescription]) }

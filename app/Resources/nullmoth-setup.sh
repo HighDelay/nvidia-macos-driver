@@ -476,6 +476,9 @@ if [ $DRY = 1 ]; then ok "dry run: the driver would install cleanly (nothing was
 mkdir -p $ST && cp "$T/pkgroot/uninstall.sh" $ST/ && chmod 755 $ST/uninstall.sh
 DBK=$(echo "$out" | sed -n 's/^Undo: sudo .\/uninstall.sh //p' | tail -1)
 echo "DRIVER_BACKUP='$DBK'" >> "$STATE"
+# the version the app compares with the newest release ("Update driver"); world-readable, the app runs as the user
+DV=$(basename "$PKG" | sed -n 's/^nullmoth-nvidia-\([0-9][0-9.]*\)\.tar\.gz$/\1/p')
+[ -n "$DV" ] && { echo "$DV" > "$ST/driver-version.tmp" && chmod 644 "$ST/driver-version.tmp" && mv "$ST/driver-version.tmp" "$ST/driver-version"; }
 ok "install record written to $STATE"
 if [ -n "$APPBIN" ] && [ -x "$APPBIN" ]; then
   cat > "$AGENT" <<PL
