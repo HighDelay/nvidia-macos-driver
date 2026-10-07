@@ -153,7 +153,21 @@ else
         mp=$(mount_efi "$d") || continue; [ -n "$(ocrel_in "$mp")" ] && found="$found $d"; done
     fi
     n=$(echo $found | wc -w | tr -d ' ')
-    [ "$n" = 0 ] && stop "no OpenCore config for this Mac ($(sysctl -n hw.model)) on any connected disk - plug in the disk or USB stick OpenCore started from, then try again"
+    if [ "$n" = 0 ]; then
+      # 10-07 (NM-HNQ1JK7A, an iMac20,1): the stop said only "no OpenCore config" - not whether the Mac runs Clover or
+      # whether a config for ANOTHER model was there. Say what each partition holds, so the user (and the report) can tell.
+      clover=""; for d in $(diskutil list | awk '/ EFI | DOS_FAT_32 | Windows_FAT_32 | Microsoft Basic Data /{print $NF}' | grep -E '^disk[0-9]+s[0-9]+$'); do
+        mp=$(mount_efi "$d") || { echo "NOTE $d: could not be mounted"; continue; }
+        [ -d "$mp/EFI/CLOVER" ] && { clover=1; echo "NOTE $d: Clover (EFI/CLOVER)"; }
+        for c in "$mp/EFI/OC/config.plist" "$mp/EFI/BOOT/config.plist"; do [ -f "$c" ] || continue
+          cm=""; for k in PlatformInfo.Generic.SystemProductName PlatformInfo.SMBIOS.SystemProductName PlatformInfo.DataHub.SystemProductName; do
+            cm=$(plutil -extract "$k" raw -o - "$c" 2>/dev/null); [ -n "$cm" ] && break; done
+          echo "NOTE $d: OpenCore config ${c#$mp/} for ${cm:-no model set}"; done; done
+      nvram 4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:opencore-version >/dev/null 2>&1 || echo "NOTE OpenCore did not start this Mac (no opencore-version in NVRAM)"
+      [ -n "$clover" ] && ! nvram 4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:opencore-version >/dev/null 2>&1 && \
+        stop "this Mac starts with Clover, not OpenCore - the NVIDIA driver's settings are made for OpenCore. Make an OpenCore setup (1401 on Windows builds one), start from it, then run this again"
+      stop "no OpenCore config for this Mac ($(sysctl -n hw.model)) on any connected disk - plug in the disk or USB stick OpenCore started from, then try again (the NOTE lines above show what each partition holds)"
+    fi
     if [ "$n" -gt 1 ]; then be=$(boot_esp); for d in $found; do [ "$d" = "$be" ] && { found=$d; n=1; ok "using the OpenCore on this Mac's own drive ($d)"; }; done; fi
     [ "$n" -gt 1 ] && { for d in $found; do echo "NOTE candidate $d"; done; stop "several OpenCore partitions found - pick one"; }
     EFI=${found# }
