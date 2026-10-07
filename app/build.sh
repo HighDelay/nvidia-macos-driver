@@ -6,7 +6,7 @@ OUT=${1:-build}; APP=$OUT/1401.app
 SDK=$(xcrun --sdk macosx --show-sdk-path)
 rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 xcrun swiftc -O -target x86_64-apple-macos15.0 -sdk "$SDK" -framework WebKit -framework Metal -framework IOKit \
-  Sources/main.swift -o "$APP/Contents/MacOS/1401"
+  Sources/main.swift Sources/profile.swift -o "$APP/Contents/MacOS/1401"
 cp Resources/* "$APP/Contents/Resources/"
 chmod 755 "$APP/Contents/Resources/nullmoth-setup.sh"
 IS=$(mktemp -d)/m.iconset; mkdir -p "$IS"

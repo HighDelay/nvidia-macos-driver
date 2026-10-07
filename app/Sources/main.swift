@@ -371,7 +371,38 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
                 "gpus": gpus, "opencore": oc, "kexts": kexts, "files": files, "metal": MTLCopyAllDevices().map { $0.name },
                 "packages": findPackages(), "version": Package.version, "safemode": safe,
                 "record": fm.fileExists(atPath: "/Library/NullMoth/state"), "crashes": driverCrashes().map(\.lastPathComponent),
-                "translated": sysctl("sysctl.proc_translated") == "1"]
+                "translated": sysctl("sysctl.proc_translated") == "1",
+                "profile": { var p = machineProfile(gpus); p["rules"] = Profile.select(rules(), p).ids; return p }()]
+    }
+
+    static func rules() -> [String: Any] {
+        guard let d = try? Data(contentsOf: Bundle.main.resourceURL!.appendingPathComponent("nullmoth-rules.json")),
+              let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return [:] }
+        return j
+    }
+    /// This Mac's profile for the per-system rules. The PC's real board/chipset come from the 1401 stick when it is
+    /// plugged in (1401 for Windows writes NullMoth/system-profile.json; macOS only sees the SMBIOS model 1401 set).
+    static func machineProfile(_ gpus: [[String: Any]]) -> [String: Any] {
+        var p: [String: Any] = [:]
+        if let nv = gpus.first(where: { $0["vendor"] as? String == "10DE" }), let dev = nv["device"] as? String {
+            p["gpu_id"] = dev.uppercased(); p["arch"] = Profile.arch(dev)
+        }
+        let vendor = sysctl("machdep.cpu.vendor")
+        p["cpu_vendor"] = vendor.contains("AMD") ? "amd" : vendor.contains("Intel") ? "intel" : vendor
+        p["cpu"] = sysctl("machdep.cpu.brand_string")
+        let bat = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
+        p["laptop"] = bat != 0; if bat != 0 { IOObjectRelease(bat) }
+        p["egpu"] = Profile.nvidiaBehindThunderbolt()
+        p["macos_major"] = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        for v in (try? FileManager.default.contentsOfDirectory(atPath: "/Volumes")) ?? [] {
+            if let d = try? Data(contentsOf: URL(fileURLWithPath: "/Volumes/\(v)/NullMoth/system-profile.json")),
+               let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                p["windows"] = j
+                if let c = j["chipset"] as? String { p["chipset"] = c }
+                break
+            }
+        }
+        return p
     }
 
     static func findPackages() -> [[String: String]] {
@@ -389,6 +420,9 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
     // the SHA256SUMS.txt published in the same release and installed by the normal install path (backup, OpenCore checks).
     var dlName = Package.name, dlSha = Package.sha256
     var dlThenInstall: String? = nil
+    // 10-07: install passed --sha Package.sha256 (the version this app was built with), so "Update driver" installing a
+    // NEWER package would stop at the setup script's checksum test. The update path passes the release's published hash.
+    var installSha: String? = nil
     var latest: (version: String, name: String, url: URL, sha: String)? = nil
     static func versionKey(_ v: String) -> [Int] { v.split(separator: ".").map { Int($0) ?? 0 } }
     static func newer(_ a: String, than b: String) -> Bool {
@@ -452,7 +486,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         try? FileManager.default.removeItem(at: dst)
         do { try FileManager.default.moveItem(at: loc, to: dst) } catch { send("dl", ["state": "error", "why": error.localizedDescription]); return }
         send("dl", ["state": "done", "path": dst.path])
-        if let efi = dlThenInstall { dlThenInstall = nil; DispatchQueue.main.async { self.run(mode: "install", pkg: dst.path, efi: efi, extra: []) } }
+        if let efi = dlThenInstall { dlThenInstall = nil; let sha = dlSha; DispatchQueue.main.async { self.installSha = sha; self.run(mode: "install", pkg: dst.path, efi: efi, extra: []) } }
     }
     func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError e: Error?) {
         if let e { send("dl", ["state": "error", "why": e.localizedDescription]) }
@@ -579,9 +613,19 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         case "remove": args = ["--remove"]
         case "usbmap", "verbose", "update": args = extra
         default:
-            args = ["--pkg", pkg, "--sha", Package.sha256, "--tool", res.appendingPathComponent("NullMothSafe.efi").path,
+            args = ["--pkg", pkg, "--sha", installSha ?? Package.sha256, "--tool", res.appendingPathComponent("NullMothSafe.efi").path,
                     "--app", Bundle.main.executablePath ?? ""]
+            installSha = nil
             if mode == "dry" { args.append("--dry") }
+            // per-system rules: this machine's profile picks the rules (nullmoth-rules.json); their knobs go to the setup script
+            let prof = App.machineProfile(pciDisplays())
+            let sel = Profile.select(App.rules(), prof)
+            for (k, v) in sel.conf.sorted(by: { $0.key < $1.key }) { args += ["--knob", "\(k)=\(v)"] }
+            var record = prof; record["rules"] = sel.ids
+            let pf = FileManager.default.temporaryDirectory.appendingPathComponent("nullmoth-profile-\(UUID().uuidString).json")
+            if let d = try? JSONSerialization.data(withJSONObject: record, options: [.prettyPrinted, .sortedKeys]), (try? d.write(to: pf)) != nil {
+                args += ["--profile", pf.path]
+            }
             args += extra
         }
         if mode != "remove", efi != "auto", !efi.isEmpty { args += ["--efi", efi] }

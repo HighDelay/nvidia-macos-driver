@@ -8,10 +8,11 @@ TOOL_NAME="1401: Remove NVIDIA driver"; TOOL_FILE=NullMothSafe.efi
 ST=${NULLMOTH_STATE_DIR:-/Library/NullMoth}; STATE=$ST/state
 AGENT=/Library/LaunchAgents/com.nullmoth.crashcheck.plist
 RECOVER=/Library/LaunchDaemons/com.nullmoth.recover.plist
-COLLECT=""; UPD=""; VERB=""; PKG=""; SHA=""; CFG=""; EFI=auto; DRY=0; REMOVE=0; USBMAP=""; TOOL=""; APPBIN=""; MOUNTED=""; T=""
+KNOBS=(); PROFILE=""; COLLECT=""; UPD=""; VERB=""; PKG=""; SHA=""; CFG=""; EFI=auto; DRY=0; REMOVE=0; USBMAP=""; TOOL=""; APPBIN=""; MOUNTED=""; T=""
 while [ $# -gt 0 ]; do case "$1" in
   --pkg) PKG=$2; shift;; --sha) SHA=$2; shift;; --config) CFG=$2; shift;; --efi) EFI=$2; shift;;
   --tool) TOOL=$2; shift;; --usbmap) USBMAP=$2; shift;; --app) APPBIN=$2; shift;; --dry) DRY=1;; --remove) REMOVE=1;; --verbose) VERB=$2; shift;; --update) UPD=$2; shift;; --collect-logs) COLLECT=$2; shift;;
+  --knob) KNOBS+=("$2"); shift;; --profile) PROFILE=$2; shift;;
   *) echo "STOP unknown option $1"; echo "RESULT stop"; exit 2;; esac; shift; done
 step() { echo "STEP $*"; }; ok() { echo "OK $*"; }; note() { echo "NOTE $*"; }
 cleanup() { for d in $MOUNTED; do diskutil unmount "$d" >/dev/null 2>&1; done; [ -n "$T" ] && rm -rf "$T"; }
@@ -95,6 +96,8 @@ if [ -n "$COLLECT" ]; then
     echo; echo "== auxiliary collection"; kmutil inspect -a x86_64 -A /Library/KernelCollections/AuxiliaryKernelExtensions.kc 2>/dev/null | grep -i nullmoth
     echo; echo "== driver files"; ls -la /Library/Extensions/NV*.kext /Library/GPUBundles 2>/dev/null
     echo; echo "== NVRM"; ioreg -r -n NVRM -d 1 -l 2>/dev/null | grep -E '"nvrm-'
+    echo; echo "== system profile and per-system rules"; cat "$ST/system-profile.json" 2>/dev/null || echo "(none recorded)"
+    sed -n '/^# --- 1401 per-system rules ---$/,/^# --- end 1401 per-system rules ---$/p' /Library/GPUBundles/nvmtl/nvrm610.conf 2>/dev/null
     # 10-07 (NM-34FKN6ZK): a second user's install failed and nothing sent named the card. The GPU model and PCI ID
     # are what decide which code path the driver takes (Turing/Ampere/Ada/Blackwell).
     echo; echo "== graphics"; system_profiler SPDisplaysDataType 2>/dev/null | grep -E "Chipset Model|Type:|Bus:|VRAM|Vendor|Device ID|Revision ID|Metal|Resolution|Display Type|Online"
@@ -476,6 +479,24 @@ if [ $DRY = 1 ]; then ok "dry run: the driver would install cleanly (nothing was
 mkdir -p $ST && cp "$T/pkgroot/uninstall.sh" $ST/ && chmod 755 $ST/uninstall.sh
 DBK=$(echo "$out" | sed -n 's/^Undo: sudo .\/uninstall.sh //p' | tail -1)
 echo "DRIVER_BACKUP='$DBK'" >> "$STATE"
+# per-system rules (nullmoth-rules.json, picked by the app from this machine's profile): their knobs go in a marked
+# block of the driver's knob file, which install.sh has just written fresh. Only NVMTL_/NVK_/NVRM_ keys with plain values.
+CONF=/Library/GPUBundles/nvmtl/nvrm610.conf
+if [ -f "$CONF" ]; then
+  sed -i '' '/^# --- 1401 per-system rules ---$/,/^# --- end 1401 per-system rules ---$/d' "$CONF"
+  if [ ${#KNOBS[@]} -gt 0 ]; then
+    { echo "# --- 1401 per-system rules ---"
+      for kv in "${KNOBS[@]}"; do
+        if [[ "$kv" =~ ^(NVMTL|NVK|NVRM)_[A-Z0-9_]+=[A-Za-z0-9._-]{0,64}$ ]]; then echo "$kv"; note "per-system rule: $kv" >&2
+        else echo "NOTE refused per-system knob '$kv' (not a driver knob)" >&2; fi
+      done
+      echo "# --- end 1401 per-system rules ---"; } >> "$CONF"
+  fi
+fi
+if [ -n "$PROFILE" ] && [ -f "$PROFILE" ]; then
+  cp "$PROFILE" "$ST/system-profile.json.tmp" && chmod 644 "$ST/system-profile.json.tmp" && mv "$ST/system-profile.json.tmp" "$ST/system-profile.json"
+  rm -f "$PROFILE"
+fi
 # the version the app compares with the newest release ("Update driver"); world-readable, the app runs as the user
 DV=$(basename "$PKG" | sed -n 's/^nullmoth-nvidia-\([0-9][0-9.]*\)\.tar\.gz$/\1/p')
 [ -n "$DV" ] && { echo "$DV" > "$ST/driver-version.tmp" && chmod 644 "$ST/driver-version.tmp" && mv "$ST/driver-version.tmp" "$ST/driver-version"; }
