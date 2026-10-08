@@ -1,6 +1,6 @@
 # 1401 Mac 1.0.17
 
-Driver helper 1.0.11 creates a unique recovery directory for every install, preventing recovery snapshots from being merged when two runs start in the same second. A guarded driver install now refuses overlapping cooperating installers before kernel-collection preflight and retains its guard if restoration cannot complete. Existing guards, changed directory identities, symlinked parents, unexpected ownership, writable parents and unreviewed access-control entries stop the install for review; existing permissions and foreign files are preserved.
+Driver helper 1.0.11 creates a unique recovery directory for every install, preventing recovery snapshots from being merged when two runs start in the same second. A guarded driver install now refuses overlapping cooperating installers before kernel-collection preflight and retains its guard if restoration cannot complete. Existing guards, symlinked parents, unexpected ownership, writable parents and unreviewed access-control entries stop the install for review; existing permissions and foreign files are preserved. If a guard directory identity changes during the install, cleanup retains its current path for review.
 
 Backup failure output retains the component, command exit status and last 4096 bytes of error output. Backup refusal still stops before driver replacement. The installer guard covers the driver installer only; earlier OpenCore configuration changes made by the setup companion are outside it. This update does not establish the cause of an unlinked Tahoe backup report.
 
