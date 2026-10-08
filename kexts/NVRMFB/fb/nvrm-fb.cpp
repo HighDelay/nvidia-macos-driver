@@ -785,8 +785,17 @@ NvBool NVRMNVDAFramebuffer::submitConfig(struct NvKmsKapiRequestedModeSetConfig 
     if (!fKms || !fDev || !cfg || !rep || fHead >= 8 || fSubmissionFaulted) return NV_FALSE;
     if (!commit) return fKms->applyModeSetConfig(fDev, cfg, rep, NV_FALSE);
     if (fSubmissionSeen) {
-        NvBool pending = NV_TRUE;
-        if (!fKms->getFlipPendingStatus(fDev, fHead, NVKMS_KAPI_LAYER_PRIMARY_IDX, &pending) || pending) {
+        // Initial console acceptance is asynchronous. A still-pending prior flip
+        // must receive the same bounded completion wait as a newly committed flip.
+        bool complete = false;
+        for (unsigned i = 0; i < 100; ++i) {
+            NvBool pending = NV_TRUE;
+            if (!fKms->getFlipPendingStatus(fDev, fHead, NVKMS_KAPI_LAYER_PRIMARY_IDX, &pending)) break;
+            if (!pending) { complete = true; break; }
+            IOSleep(1);
+        }
+        if (!complete) {
+            FBLOG("presentation blocked: prior completion unavailable on head %u", fHead);
             fSubmissionFaulted = true; return NV_FALSE;
         }
     }
@@ -794,7 +803,17 @@ NvBool NVRMNVDAFramebuffer::submitConfig(struct NvKmsKapiRequestedModeSetConfig 
         cfg->headRequestedConfig[fHead].layerRequestedConfig[NVKMS_KAPI_LAYER_PRIMARY_IDX].config.surface;
     const NvBool accepted = fKms->applyModeSetConfig(fDev, cfg, rep, NV_TRUE);
     if (!accepted || rep->flipResult != NV_KMS_FLIP_RESULT_SUCCESS) {
-        fSubmissionFaulted = true; return NV_FALSE;
+        // A rejected request queued nothing (INVALID_PARAMS fails validation, IN_PROGRESS refuses before queuing), so
+        // no surface is in flight and this call alone fails. Latching here turned one refused 8x8 cursor image at
+        // login into no zero-copy flips and no mode or refresh changes on every head until reboot.
+        // KAPI resets and advances the layer's completion-notifier slot before it submits (its own comment: "What if
+        // commit fail?"), so after a rejection the current slot is one NVKMS will never write and reads NOT_BEGUN
+        // forever. The previous flip was already proven complete above (or nothing was tracked), so forget it here;
+        // the next accepted flip gets a fresh slot that NVKMS does write.
+        fSubmissionSeen = false;
+        static unsigned rejected;
+        if (++rejected <= 8) FBLOG("commit rejected on head %u result %d (this request only)", fHead, (int)rep->flipResult);
+        return NV_FALSE;
     }
     if (!tracked) { fSubmissionSeen = false; return NV_TRUE; }
     fSubmissionSeen = true;
@@ -807,6 +826,7 @@ NvBool NVRMNVDAFramebuffer::submitConfig(struct NvKmsKapiRequestedModeSetConfig 
         IOSleep(1);
     }
     // Keep both the old front and submitted surface alive until a proven recovery/reboot.
+    FBLOG("presentation blocked: submitted completion unavailable on head %u", fHead);
     fSubmissionFaulted = true; return NV_FALSE;
 }
 

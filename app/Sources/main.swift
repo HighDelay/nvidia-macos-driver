@@ -12,7 +12,7 @@ struct Package {
     static let version = "1.1.0"
     static let name = "nullmoth-nvidia-1.1.0.tar.gz"
     static let url = URL(string: "https://github.com/nullmoth/nvidia-macos-driver/releases/download/v1.1.0/nullmoth-nvidia-1.1.0.tar.gz")!
-    static let sha256 = "4e03990c3c208442f78e260b2c373798192f342c34592393578c71ecc81be24b"
+    static let sha256 = "22478d83ed4d2b95711c2f001b40245e3198b6fb9716078c192e6ff18955d587"
 }
 let uploadPage = URL(string: "https://nullmothsystems.com/#send")!
 let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("NullMoth")
