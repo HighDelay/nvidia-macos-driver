@@ -662,9 +662,21 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
             let cmd = "/bin/bash \(q(script))"
             var err: NSDictionary?
             var collectionErrors: [String] = []
-            if let appleScript = NSAppleScript(source: "do shell script \"\(cmd.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\" with administrator privileges") {
-                let result = appleScript.executeAndReturnError(&err)
-                do { collectionErrors += try SavedReports.importCollection(result.stringValue ?? "", to: dir) }
+            // NSAppleScript is not thread-safe and its administrator password panel needs the main run loop. Run from this
+            // background queue it could hang or show a panel no one saw, and the window stayed on "Collecting and
+            // sending..." for an hour (support chat 10-08). The script runs on the main thread; the rest stays here.
+            var output: String? = nil, started = false
+            DispatchQueue.main.sync {
+                self.send("logsStatus", ["text": "Waiting for your Mac password (a macOS window asks for it)..."])
+                NSApp.activate(ignoringOtherApps: true)
+                if let appleScript = NSAppleScript(source: "do shell script \"\(cmd.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\" with administrator privileges") {
+                    started = true
+                    output = appleScript.executeAndReturnError(&err).stringValue
+                }
+                self.send("logsStatus", ["text": "Collecting and sending..."])
+            }
+            if started {
+                do { collectionErrors += try SavedReports.importCollection(output ?? "", to: dir) }
                 catch { collectionErrors.append("System log collection was incomplete: \(error.localizedDescription)") }
             } else { collectionErrors.append("System log collection could not be started.") }
             if let error = err { collectionErrors.append(redact(error.description)) }

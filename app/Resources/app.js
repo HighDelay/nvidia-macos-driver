@@ -165,6 +165,7 @@ NM.on = (m) => {
     usbRender(); return;
   }
   if (m.event === "usbErr") { $("uerr").textContent = m.data; return; }
+  if (m.event === "logsStatus") { $("slr").textContent = m.data.text; return; }
   if (m.event === "logsDone") {
     const d = m.data;
     $("sl").disabled = false;
