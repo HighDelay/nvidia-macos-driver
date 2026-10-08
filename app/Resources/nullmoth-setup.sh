@@ -319,21 +319,8 @@ else
     fi
     # A shared SMBIOS model or the macOS disk does not identify the booted EFI.
     # Retain candidate discovery, but require explicit selection without boot-path proof.
-    # boot-path is published only when OpenCore's Misc > Security > ExposeSensitiveData has bit 0x1, and the usual
-    # value (6) does not: a Mac with exactly one OpenCore partition still stopped here (1401 Mac 1.0.17).
-    # Second proof: OpenCore writes opencore-<time>.txt on the partition it started from at every boot (1401's configs
-    # log to file). One candidate holding a log written within this boot's start window is that partition.
-    if [ "$BOOT_BOUND" != 1 ]; then
-      bt=$(sysctl -n kern.boottime | sed -E 's/.*sec = ([0-9]+).*/\1/'); hit=""
-      for d in $found; do
-        mount_efi "$d" || continue; mp=$MOUNT_POINT
-        for lf in "$mp"/opencore-*.txt; do [ -f "$lf" ] || continue
-          m=$(stat -f %m "$lf" 2>/dev/null) || continue
-          [ "$m" -ge $((bt - 900)) ] && [ "$m" -le $((bt + 300)) ] && { hit="$hit $d"; break; }; done; done
-      if [ "$(echo $hit | wc -w | tr -d ' ')" = 1 ]; then
-        found=${hit# }; BOOT_BOUND=1; ok "OpenCore started this Mac from $found (its log from this start is there)"
-      fi
-    fi
+    # File modification time does not identify the firmware startup partition: copies and clocks can match.
+    # Require the actual boot-path/GPT identity or an explicit verified selection before changing OpenCore.
     if [ "$BOOT_BOUND" != 1 ]; then
       for d in $found; do echo "NOTE candidate $d"; done
       stop "OpenCore's startup partition could not be confirmed - select the partition this Mac started from"

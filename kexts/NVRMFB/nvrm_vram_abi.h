@@ -6,7 +6,7 @@
 
 #pragma once
 
-#define NVRM_VRAM_ABI_VERSION 1u
+#define NVRM_VRAM_ABI_VERSION 2u
 #define NVRM_VRAM_FN_ALLOC    "nvAllocVram"
 #define NVRM_VRAM_FN_FREE     "nvFreeVram"
 
@@ -24,4 +24,5 @@ struct NVRMVramRequest {
     void              *handle;
     unsigned long long mappedTotal;
     unsigned int width, height, pitch;
+    unsigned long long allocationCookie;
 };

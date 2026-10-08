@@ -65,6 +65,7 @@ class NVVidMemory : public IOAccelVidMemory {
     NM_TAHOE_FWD(NVVidMemory)
 public:
     void              *fRmHandle = nullptr;
+    unsigned long long fAllocationCookie = 0;
     void              *fKva      = nullptr;
     unsigned long long fPhys     = 0;
     unsigned long long fBytes    = 0;

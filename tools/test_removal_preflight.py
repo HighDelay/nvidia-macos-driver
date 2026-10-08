@@ -58,8 +58,12 @@ class RemovalPreflight(unittest.TestCase):
         self.assertEqual(plistlib.loads(self.cfg.read_bytes()),self.config)
         self.assertTrue(self.state.exists());self.assertTrue(self.recover.exists());self.assertTrue(self.tool.exists())
     def test_missing_recorded_partition_stops_before_removal(self):self.assert_preflight_stop(self.run_remove(MISSING_ESP='1'))
-    def test_missing_backup_stops_before_removal(self):
-        self.back.unlink();self.assert_preflight_stop(self.run_remove())
+    def test_missing_backup_removes_only_driver_settings_from_proven_partition(self):
+        self.back.unlink();r=self.run_remove();self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        c=plistlib.loads(self.cfg.read_bytes())
+        self.assertEqual(c['NVRAM']['Add'][BOOT]['boot-args'],'-v custom=1')
+        self.assertEqual(c['Misc']['Tools'],[])
+        self.assertFalse(self.state.exists())
     def test_failed_config_edit_stops_before_removal(self):self.assert_preflight_stop(self.run_remove(FAIL_EDIT='UEFI.Quirks.ResizeGpuBars'))
     def test_failed_uninstaller_preserves_config_and_recovery(self):
         r=self.run_remove(FAIL_UNINSTALL='1');self.assertNotEqual(r.returncode,0)
@@ -93,7 +97,7 @@ class RemovalPreflight(unittest.TestCase):
         r=self.run_remove();self.assertEqual(r.returncode,0,r.stdout+r.stderr)
         self.assertFalse(any(c.startswith('unmount ') for c in (self.r/'disk-calls').read_text().splitlines()))
     def test_new_mount_is_cleaned_up_on_preflight_failure(self):
-        self.back.unlink();self.assert_preflight_stop(self.run_remove(MOUNT_ON_REQUEST='1'))
+        self.assert_preflight_stop(self.run_remove(MOUNT_ON_REQUEST='1',FAIL_EDIT='UEFI.Quirks.ResizeGpuBars'))
         self.assertFalse((self.r/'mounted').exists())
     def test_selected_replacement_partition_can_be_used(self):
         r=self.run_remove('--efi','replacement-esp');self.assertEqual(r.returncode,0,r.stdout+r.stderr)

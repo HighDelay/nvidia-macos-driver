@@ -20,7 +20,7 @@ name=Path(sys.argv[0]).name;a=sys.argv[1:];r=Path(os.environ['FIXTURE_ROOT'])
 with (r/'calls.jsonl').open('a') as f:f.write(json.dumps([name]+a)+'\n')
 if name=='id':print('0')
 elif name=='uname':print('x86_64')
-elif name=='sw_vers':print('25G241' if a==['-buildVersion'] else os.environ.get('FAKE_OS_VERSION','26.7.1'))
+elif name=='sw_vers':print('25G241' if a==['-buildVersion'] else os.environ.get('FAKE_OS_VERSION','15.8.1'))
 elif name=='ioreg':print('"vendor-id" = <de100000>')
 elif name=='nvram':print('boot-args\tnvfb=1 nvaccel=1')
 elif name=='stat':
@@ -109,6 +109,14 @@ class Install(unittest.TestCase):
         self.assertEqual(self.other.stat().st_mode&0o777,0o400)
     def assert_creates(self,count):
         self.assertEqual(int((self.root/'creates').read_text()),count)
+    def test_unqualified_os_is_refused_before_collection_or_backup(self):
+        r=self.run_install(FAKE_OS_VERSION='26.7.1')
+        self.assertNotEqual(r.returncode,0)
+        self.assertIn('qualified for macOS 15 only',r.stdout+r.stderr)
+        self.assertFalse((self.root/'creates').exists())
+        self.assertFalse(list((self.root/'Library/NullMoth').glob('backup-*')))
+        for path,expected in self.old.items():self.assertEqual(path.read_bytes(),expected)
+
     def test_older_runtime_host_is_refused_before_collection_or_backup(self):
         r=self.run_install(FAKE_OS_VERSION='15.4.9')
         self.assertNotEqual(r.returncode,0,r.stdout+r.stderr)

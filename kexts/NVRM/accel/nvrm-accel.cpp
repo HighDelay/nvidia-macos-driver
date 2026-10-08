@@ -649,7 +649,7 @@ bool NVVidMemory::allocPhysical()
              this, want, (unsigned)ret);
         return false;
     }
-    fRmHandle = r.handle; fKva = r.kva; fPhys = r.phys; fBytes = r.actualSize;
+    fRmHandle = r.handle; fKva = r.kva; fPhys = r.phys; fBytes = r.actualSize; fAllocationCookie = r.allocationCookie;
     OSAddAtomic64(1, &gCntVmAlloc); OSAddAtomic64((SInt64)fBytes, &gCntVmAllocBytes);
     *(volatile unsigned long long *)((unsigned char *)this + 0xc8) = fPhys;
     ALOG("NVVidMemory::allocPhysical(%p): %llu bytes of REAL VRAM -- phys 0x%llx kva %p [BAR1 %llu]",
@@ -670,9 +670,9 @@ void NVVidMemory::deallocPhysical()
     struct NVRMVramRequest r;
     for (unsigned i = 0; i < sizeof r; i++) ((volatile unsigned char *)&r)[i] = 0;
     r.version = NVRM_VRAM_ABI_VERSION;
-    r.handle = fRmHandle; r.kva = fKva; r.actualSize = fBytes;
+    r.handle = fRmHandle; r.kva = fKva; r.actualSize = fBytes; r.allocationCookie = fAllocationCookie;
     if (NVAccel::gAccel) NVAccel::gAccel->askFramebufferForVram(&r, false);
-    fRmHandle = nullptr; fKva = nullptr; fPhys = 0; fBytes = 0;
+    fRmHandle = nullptr; fKva = nullptr; fPhys = 0; fBytes = 0; fAllocationCookie = 0;
     *(volatile unsigned long long *)((unsigned char *)this + 0xc8) = 0;
 }
 
@@ -1407,7 +1407,7 @@ static bool nvAccelIopFlip(IOService *fb, unsigned head, IOSurface *s, void *pip
     const unsigned long long W = s->getWidth(), H = s->getHeight(), P = s->getBytesPerRow();
     if (!W || !H || P < 4 * W || H * P > bytes) return nvAccelIopFlipNo(6);
     struct NVRMFlipRequest f; nvSVZero(&f, sizeof f);
-    f.version = NVRM_GPUVA_ABI_VERSION; f.kapiMemory = kmem; f.width = (unsigned)W; f.height = (unsigned)H; f.pitch = (unsigned)P;
+    f.version = NVRM_FLIP_ABI_VERSION; f.kapiMemory = kmem; f.allocationCookie = vm->fAllocationCookie; f.width = (unsigned)W; f.height = (unsigned)H; f.pitch = (unsigned)P;
     if (gIopAsync && pipe) return nvAccelIopAsyncStart(pipe, fb, head, s, &f);
     const OSSymbol *sym = OSSymbol::withCStringNoCopy("nvFlipToSurfacePure");
     IOReturn rr = sym ? fb->callPlatformFunction(sym, false, &f, nullptr, nullptr, nullptr) : kIOReturnNoMemory;
@@ -1447,7 +1447,7 @@ static void nvAccelIopHome(IOService *fb, unsigned head)
 {
     if (!fb || head >= kNvMaxFB || !gIopFlipped[head]) return;
     struct NVRMFlipRequest f; nvSVZero(&f, sizeof f);
-    f.version = NVRM_GPUVA_ABI_VERSION; f.flags = 1u;
+    f.version = NVRM_FLIP_ABI_VERSION; f.flags = 1u;
     const OSSymbol *sym = OSSymbol::withCStringNoCopy("nvFlipToSurfacePure");
     IOReturn rr = sym ? fb->callPlatformFunction(sym, false, &f, nullptr, nullptr, nullptr) : kIOReturnNoMemory;
     if (sym) sym->release();
@@ -1742,8 +1742,8 @@ static bool nvAccelFlipTo(IOAccelResource2 *res)
     struct NVRMFlipRequest f;
     volatile unsigned char *z = (volatile unsigned char *)&f;
     for (unsigned i = 0; i < sizeof f; i++) z[i] = 0;
-    f.version = NVRM_GPUVA_ABI_VERSION;
-    f.kapiMemory = vm->fRmHandle;
+    f.version = NVRM_FLIP_ABI_VERSION;
+    f.kapiMemory = vm->fRmHandle; f.allocationCookie = vm->fAllocationCookie;
     f.width = w; f.height = h; f.pitch = pitch;
 
     const OSSymbol *sym = OSSymbol::withCStringNoCopy(NVRM_FLIP_FN);
