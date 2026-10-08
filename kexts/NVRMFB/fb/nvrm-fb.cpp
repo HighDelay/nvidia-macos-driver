@@ -68,7 +68,7 @@ class NVRMNVDAFramebuffer : public IOFramebuffer {
     NvU8 fEdid[NVKMS_KAPI_EDID_BUFFER_SIZE]; NvU16 fEdidSize = 0;
     bool fModeSet = false;
     unsigned fHomePure = 0;
-    IODetailedTimingInformationV2 fDT[64]; unsigned fNDT = 0;
+    IODetailedTimingInformationV2 fDT[128]; unsigned fNDT = 0;
     IODisplayModeID fCurId = 1;
     struct NvKmsKapiDisplayMode fBootMode = {};
     NvU32 fBootW = 0, fBootH = 0, fBootPitch = 0;
@@ -80,6 +80,7 @@ class NVRMNVDAFramebuffer : public IOFramebuffer {
     bool fBootInDT = false;
     int dtIndex(IODisplayModeID id) const;
     bool edidModeFor(const IODetailedTimingInformationV2 *d, struct NvKmsKapiDisplayMode *m);
+    unsigned addKmsRefreshModes(unsigned n);
     unsigned fEdidHits = 0;
     static void dtToKapi(const IODetailedTimingInformationV2 *d, struct NvKmsKapiDisplayMode *m);
     IOReturn switchMode(IODisplayModeID id, const struct NvKmsKapiDisplayMode &m, NvU32 w, NvU32 h);
@@ -1267,6 +1268,62 @@ bool NVRMNVDAFramebuffer::edidModeFor(const IODetailedTimingInformationV2 *d, st
     }
     return false;
 }
+// Users on HDMI and DisplayPort (RTX 3050/3060/4060, 144-240 Hz panels) saw only 60 Hz: macOS's EDID parse handed
+// validateDetailedTiming nothing above 60 Hz for those panels, while NVKMS parses the same EDID (CTA-861 and DisplayID
+// blocks, link limits) into its own validated mode list. Every refresh rate NVKMS validated for a raster macOS already
+// lists, and that macOS did not offer, is added here: unscaled, plus one copy of each of macOS's own scaled (HiDPI)
+// desktops on that raster. The timings are NVKMS's exactly, so setDisplayMode commits a mode NVKMS itself validated.
+// IDs are 0x10000 | NVKMS mode index << 8 | copy (0 = unscaled): below Apple's reserved 0x80000000 range and stable
+// across repeated setDetailedTimings calls for the same display.
+unsigned NVRMNVDAFramebuffer::addKmsRefreshModes(unsigned n)
+{
+    if (!fKms || !fDev || !fDisplay) return n;
+    const unsigned cap = sizeof fDT / sizeof fDT[0], fromMac = n;
+    unsigned added = 0;
+    for (NvU32 i = 0; i < 256 && n < cap; i++) {
+        struct NvKmsKapiDisplayMode m = {}; NvBool valid = NV_FALSE, pref = NV_FALSE;
+        int r = fKms->getDisplayMode(fDev, fDisplay, i, &m, &valid, &pref);
+        if (r < 0) break;
+        if (r == 0 || !valid) continue;
+        const struct NvKmsKapiDisplayModeTimings &k = m.timings;
+        if (k.flags.interlaced || k.flags.doubleScan || !k.pixelClockHz || k.hTotal <= k.hVisible || k.vTotal <= k.vVisible ||
+            k.hSyncStart < k.hVisible || k.hSyncEnd < k.hSyncStart || k.vSyncStart < k.vVisible || k.vSyncEnd < k.vSyncStart) continue;
+        const NvU64 tot = (NvU64)k.hTotal * k.vTotal;
+        const NvU32 hz = (NvU32)((k.pixelClockHz + tot / 2) / tot);
+        int tmpl = -1; bool have = false;
+        for (unsigned j = 0; j < n; j++) {
+            const IODetailedTimingInformationV2 &d = fDT[j];
+            if (d.horizontalActive != k.hVisible || d.verticalActive != k.vVisible) continue;
+            const UInt64 dt = (UInt64)(d.horizontalActive + d.horizontalBlanking) * (d.verticalActive + d.verticalBlanking);
+            const NvU32 dhz = dt ? (NvU32)((d.pixelClock + dt / 2) / dt) : 0;
+            if (dhz + 1 >= hz && dhz <= hz + 1) { have = true; break; }
+            if (tmpl < 0 && j < fromMac && !d.horizontalScaled && !d.verticalScaled) tmpl = (int)j;
+        }
+        if (have || tmpl < 0) continue;
+        IODetailedTimingInformationV2 b = fDT[tmpl];
+        b.pixelClock = b.minPixelClock = b.maxPixelClock = k.pixelClockHz;
+        b.horizontalBlanking = k.hTotal - k.hVisible; b.horizontalSyncOffset = k.hSyncStart - k.hVisible;
+        b.horizontalSyncPulseWidth = k.hSyncEnd - k.hSyncStart;
+        b.verticalBlanking = k.vTotal - k.vVisible; b.verticalSyncOffset = k.vSyncStart - k.vVisible;
+        b.verticalSyncPulseWidth = k.vSyncEnd - k.vSyncStart;
+        b.horizontalSyncConfig = k.flags.hSyncPos ? 1 : 0; b.verticalSyncConfig = k.flags.vSyncPos ? 1 : 0;
+        b.detailedTimingModeID = 0x10000u | (i << 8);
+        fDT[n++] = b; added++;
+        FBLOG("fb%u refresh rate from NVKMS: %ux%u @%u Hz (pclk %u) as dt 0x%x", fIndex, k.hVisible, k.vVisible, hz,
+              k.pixelClockHz, b.detailedTimingModeID);
+        unsigned copy = 1;
+        for (unsigned j = 0; j < fromMac && n < cap && copy < 256; j++) {
+            const IODetailedTimingInformationV2 &d = fDT[j];
+            if (!d.horizontalScaled || !d.verticalScaled || d.horizontalActive != k.hVisible || d.verticalActive != k.vVisible) continue;
+            IODetailedTimingInformationV2 c = b;
+            c.horizontalScaled = d.horizontalScaled; c.verticalScaled = d.verticalScaled; c.scalerFlags = d.scalerFlags;
+            c.detailedTimingModeID = 0x10000u | (i << 8) | copy++;
+            fDT[n++] = c; added++;
+        }
+    }
+    if (added) setProperty("NVRMRefreshModesAdded", (unsigned long long)added, 32);
+    return n;
+}
 int NVRMNVDAFramebuffer::dtIndex(IODisplayModeID id) const
 {
     for (unsigned i = 0; i < fNDT; i++) if ((IODisplayModeID)fDT[i].detailedTimingModeID == id) return (int)i;
@@ -1379,11 +1436,13 @@ IOReturn NVRMNVDAFramebuffer::setDetailedTimings(OSArray *array)
         return kIOReturnSuccess;
     }
     unsigned n = 0, bad = 0;
-    for (unsigned i = 0; i < array->getCount() && n < 64; i++) {
+    for (unsigned i = 0; i < array->getCount() && n < 64; i++) {  // 64 from macOS; the rest of fDT is for addKmsRefreshModes
         OSData *data = OSDynamicCast(OSData, array->getObject(i));
         if (!data || data->getLength() < sizeof(IODetailedTimingInformationV2)) { bad++; continue; }
         nvu_copy(&fDT[n++], data->getBytesNoCopy(), sizeof(IODetailedTimingInformationV2));
     }
+    const unsigned fromMac = n;
+    n = addKmsRefreshModes(n);
     fNDT = n;
     setProperty(kIOFBDetailedTimingsKey, array);
     fBootInDT = false;
@@ -1401,7 +1460,8 @@ IOReturn NVRMNVDAFramebuffer::setDetailedTimings(OSArray *array)
             break;
         }
     } else fBootInDT = true;
-    FBLOG("fb%u setDetailedTimings: %u timing(s) installed (%u malformed, %u offered), current 0x%x, EDID matches so far %u", fIndex, n, bad, array->getCount(), (unsigned)fCurId, fEdidHits);
+    FBLOG("fb%u setDetailedTimings: %u timing(s) installed (%u from macOS, %u refresh rates from NVKMS; %u malformed, %u offered), current 0x%x, EDID matches so far %u",
+          fIndex, n, fromMac, n - fromMac, bad, array->getCount(), (unsigned)fCurId, fEdidHits);
     for (unsigned i = 0; i < n && i < 24; i++)
         FBLOG("  dt 0x%x raster %ux%u desktop %ux%u pclk %llu", fDT[i].detailedTimingModeID, fDT[i].horizontalActive, fDT[i].verticalActive,
               fDT[i].horizontalScaled, fDT[i].verticalScaled, (unsigned long long)fDT[i].pixelClock);
@@ -1419,7 +1479,7 @@ void NVRMNVDAFramebuffer::publishTimingCaps()
     r.minPixelClock = 25000000ull; r.maxPixelClock = 1200000000ull; r.maxPixelError = 0;
     r.supportedSyncFlags = kIORangeSupportsSeparateSyncs;
     r.supportedSignalLevels = 0; r.supportedSignalConfigs = kIODigitalSignal;
-    r.minFrameRate = 23; r.maxFrameRate = 240; r.minLineRate = 10000; r.maxLineRate = 1000000;
+    r.minFrameRate = 23; r.maxFrameRate = 500; r.minLineRate = 10000; r.maxLineRate = 1000000;
     r.maxHorizontalTotal = 16384; r.maxVerticalTotal = 16384;
     r.charSizeHorizontalActive = r.charSizeHorizontalBlanking = r.charSizeHorizontalSyncOffset = r.charSizeHorizontalSyncPulse = 1;
     r.charSizeVerticalActive = r.charSizeVerticalBlanking = r.charSizeVerticalSyncOffset = r.charSizeVerticalSyncPulse = 1;
@@ -1438,7 +1498,7 @@ void NVRMNVDAFramebuffer::publishTimingCaps()
     r.supportedColorimetryModes = kIORangeColorimetryNativeRGB | kIORangeColorimetrysRGB; r.supportedDynamicRangeModes = kIORangeDynamicRangeSDR;
     OSData *g = OSData::withBytes(&r, sizeof r);
     if (g) { setProperty(kIOFBTimingRangeKey, g); g->release(); }
-    FBLOG("fbmodes: published IOFBScalerInfo (up+down, max %ux%u) + IOFBTimingRange (25 MHz..1.2 GHz, 23..240 Hz)", fScalerMaxW, fScalerMaxH);
+    FBLOG("fbmodes: published IOFBScalerInfo (up+down, max %ux%u) + IOFBTimingRange (25 MHz..1.2 GHz, 23..500 Hz)", fScalerMaxW, fScalerMaxH);
 }
 IOReturn NVRMNVDAFramebuffer::getInformationForDisplayMode(IODisplayModeID mode, IODisplayModeInformation *info)
 {
