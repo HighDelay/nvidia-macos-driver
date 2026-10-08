@@ -325,23 +325,13 @@ else
   OCREL=$(ocrel_in "$MP"); [ -n "$OCREL" ] || stop "$EFI has no OpenCore config (EFI/OC/config.plist or EFI/BOOT/config.plist)"
   C="$MP/$OCREL/config.plist"
   ok "OpenCore config: $EFI ($C)"
-  # The OpenCore 1401 built for this PC lives on the stick it installed macOS from. Once macOS runs, it belongs on the
-  # Mac's own drive, so the Mac starts without the stick and every later change lands there. (10-07: a fresh install's
-  # EFI partition was empty, so the Mac could only start from the stick.) A drive that already has OpenCore is left alone.
-  BE=$(boot_esp)
-  if [ $DRY = 0 ] && [ -z "$VERB" ] && [ "${UPD:-}" != finish ] && [ -n "$BE" ] && [ "$BE" != "$EFI" ] && on_usb "$EFI"; then
-    mount_efi "$BE" || stop "could not mount this Mac's EFI partition $BE"; BMP=$MOUNT_POINT
-    if [ -z "$(ocrel_in "$BMP")" ]; then
-      step "Copying this PC's OpenCore from the stick onto the Mac's own drive"
-      mkdir -p "$ST"; EB="$ST/efi-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
-      [ -d "$BMP/EFI" ] && { tar -czf "$EB" -C "$BMP" EFI || stop "could not back up $BE's EFI folder"; ok "backed up the drive's old EFI folder to $EB"; }
-      rm -rf "$BMP/EFI.nullmoth-new"; ditto "$MP/EFI" "$BMP/EFI.nullmoth-new" || { rm -rf "$BMP/EFI.nullmoth-new"; stop "could not copy OpenCore to $BE (is the partition full?)"; }
-      [ "$(shasum -a 256 "$BMP/EFI.nullmoth-new/${OCREL#EFI/}/config.plist" | cut -c1-64)" = "$(shasum -a 256 "$C" | cut -c1-64)" ] || { rm -rf "$BMP/EFI.nullmoth-new"; stop "the copied config does not match the stick's - nothing changed"; }
-      rm -rf "$BMP/EFI.nullmoth-old"; [ -d "$BMP/EFI" ] && mv "$BMP/EFI" "$BMP/EFI.nullmoth-old"; mv "$BMP/EFI.nullmoth-new" "$BMP/EFI" && rm -rf "$BMP/EFI.nullmoth-old"
-      EFI=$BE; MP=$BMP; C="$MP/$OCREL/config.plist"
-      ok "OpenCore is now on this Mac's drive ($BE) - the Mac starts without the stick; changes go to $C"
-    fi
+  # Installation uses the verified or explicitly selected startup partition.
+  # Implicit migration cannot establish ownership of another disk's boot files.
+  if [ $DRY = 0 ] && [ -z "$VERB" ] && [ "${UPD:-}" != finish ] && on_usb "$EFI"; then
+    note "OpenCore remains on the selected startup stick. Keep it attached for every restart; automatic copying onto another EFI partition is disabled"
+    note "Existing internal Windows and vendor boot files were left untouched. Review the internal boot setup separately before removing the stick"
   fi
+
 fi
 plutil -lint "$C" >/dev/null || stop "$C is not a valid plist - fix it before installing"
 

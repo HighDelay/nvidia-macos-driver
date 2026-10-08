@@ -51,7 +51,6 @@ class RuntimeMinimum(unittest.TestCase):
         setup=(ROOT/'app/Resources/nullmoth-setup.sh').read_text()
         gate=setup.index('/bin/bash "$RUNTIME_PREFLIGHT" "$T/pkgroot"')
         self.assertLess(gate,setup.index('if [ -n "$CFG" ]; then C=$CFG'))
-        self.assertLess(gate,setup.index('rm -rf "$BMP/EFI.nullmoth-new"'))
         installer=(ROOT/'package/install.sh').read_text()
         self.assertLess(installer.index('/bin/bash "$RUNTIME_PREFLIGHT" "$HERE"'),installer.index('step "3. test kernel collection"'))
         self.assertEqual(installer,(ROOT/'app/Resources/nullmoth-install.sh').read_text())
