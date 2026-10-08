@@ -8,10 +8,10 @@ import Metal
 import WebKit
 
 struct Package {
-    static let version = "1.0.7"
-    static let name = "nullmoth-nvidia-1.0.7.tar.gz"
-    static let url = URL(string: "https://github.com/nullmoth/nvidia-macos-driver/releases/download/v1.0.10/nullmoth-nvidia-1.0.7.tar.gz")!
-    static let sha256 = "5d66e1b6b0706de1056b76d5adcd3fb1cbe7e81af57c4dfbd2b31b7ec202ebf7"
+    static let version = "1.0.8"
+    static let name = "nullmoth-nvidia-1.0.8.tar.gz"
+    static let url = URL(string: "https://github.com/nullmoth/nvidia-macos-driver/releases/download/v1.0.12/nullmoth-nvidia-1.0.8.tar.gz")!
+    static let sha256 = "459e874e889f5913f4c88956c09fd827f1a2bb2c4f39ab1bbcb8af9094366ba2"
 }
 let uploadPage = URL(string: "https://nullmothsystems.com/#send")!
 let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("NullMoth")
