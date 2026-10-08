@@ -157,7 +157,7 @@ static inline void nvmtl_resref(id o, int d) {
 @implementation NVMTLResSet
 - (instancetype)init { if ((self = [super init])) _s = [NSMutableSet new]; return self; }
 - (instancetype)initWithCapacity:(NSUInteger)n { if ((self = [super init])) _s = [[NSMutableSet alloc] initWithCapacity:n]; return self; }
-// 10-07 (user crash report NM-W8WHES8G, RTX 5060 Ti): Hackintool died in -[__NSSetM member:] under -addObject:, called
+// 10-07 (a user's crash report, RTX 5060 Ti): Hackintool died in -[__NSSetM member:] under -addObject:, called
 // from setFragmentTexture on CoreAnimation's async-render workqueue thread. NSMutableSet is not thread-safe and nothing
 // here serialised it, so every operation now holds _lk. Enumeration hands out a snapshot, never the live set.
 - (NSUInteger)count { os_unfair_lock_lock(&_lk); NSUInteger n = _s.count; os_unfair_lock_unlock(&_lk); return n; }

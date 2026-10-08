@@ -266,7 +266,7 @@ static BOOL nvmtl_sel1_idle(int *r) { return __atomic_load_n(r, __ATOMIC_ACQUIRE
 // stride = size, Pointer/Texture, the binding index) and Apple's GL/OpenCL layer laid out its clImage*Scale kernel arguments
 // from them. The working build never implemented them: its forwarding net answered ZERO. They stay implemented (no abort)
 // and answer exactly that zero.
-// 10-07 (user crash report NM-W8WHES8G): Geekbench's OpenCL build aborted in -[NVMTLGLBinding doesNotRecognizeSelector:]
+// 10-07 (a user's crash report): Geekbench's OpenCL build aborted in -[NVMTLGLBinding doesNotRecognizeSelector:]
 // under GLDComputeProgramRec::buildComputeProgram. Apple's GL-on-Metal layer reads reflection through the older MTLArgument
 // / MTLType getters; measured on its binary (selector refs): arrayLength, textureType, alignment, dataSize, members,
 // elementTypeDescription. A buffer binding answers each with what MTLArgument gives for a buffer.
@@ -282,7 +282,7 @@ static BOOL nvmtl_sel1_idle(int *r) { return __atomic_load_n(r, __ATOMIC_ACQUIRE
 - (BOOL)active { return NO; }
 - (NSUInteger)threadgroupMemoryAlignment { return 0; }
 - (NSUInteger)threadgroupMemoryDataSize { return 0; }
-// 10-07 (NM-P0NWBY60, RTX 3050 on driver 1.0.3): Geekbench's OpenCL build still aborted here. The renderer's selector
+// 10-07 (RTX 3050 on driver 1.0.3): Geekbench's OpenCL build still aborted here. The renderer's selector
 // list (AppleMetalOpenGLRenderer, macOS 15.8.1) also names dataType, offset, stride and argumentIndex, which a buffer
 // binding did not answer. A buffer reads as a pointer at offset 0, one element of its own size, at its own index.
 - (MTLDataType)dataType { return MTLDataTypeNone; }

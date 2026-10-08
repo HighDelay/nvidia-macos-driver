@@ -12,7 +12,7 @@
       "id": "turing-copy-engine",
       "builtin": true,
       "why": "Turing needs the graphics engine's partner copy engine named when its copy object is made (driver 1.0.7).",
-      "evidence": ["NM-Y751R9W4 GTX 1650 Mobile: VK_ERROR_UNKNOWN at the copy object"],
+      "evidence": ["GTX 1650 Mobile: VK_ERROR_UNKNOWN at the copy object"],
       "match": {"arch": ["turing"]}
     },
     {
@@ -26,21 +26,21 @@
       "id": "image-size-pre-blackwell",
       "builtin": true,
       "why": "Tiled images are sized to the 64 KB range they are bound with, before Blackwell (driver 1.0.6/1.0.7).",
-      "evidence": ["NM-P0NWBY60 RTX 3050: WindowServer abort on a resolution change"],
+      "evidence": ["RTX 3050: WindowServer abort on a resolution change"],
       "match": {"arch": ["turing", "ampere", "ada"]}
     },
     {
       "id": "egpu-bar-left-in-place",
       "builtin": true,
       "why": "Behind Thunderbolt or a PCIe switch the driver does not move the card's memory window (driver 1.0.6).",
-      "evidence": ["NM-Y6ME6FJ2 RTX 3070 eGPU: kbusVerifyBar2 NV_ERR_MEMORY_ERROR"],
+      "evidence": ["RTX 3070 eGPU: kbusVerifyBar2 NV_ERR_MEMORY_ERROR"],
       "match": {"egpu": true}
     },
     {
       "id": "bar1-resize-8gb",
       "builtin": true,
       "why": "A card that starts with a small BAR1 is resized to at most 8 GB (driver 1.0.6).",
-      "evidence": ["NM-G68Y845E RTX 3060 and NM-4XAED8CN RTX 5080 stopped at 16 GB"],
+      "evidence": ["RTX 3060 and RTX 5080 stopped at 16 GB"],
       "match": {}
     }
   ]

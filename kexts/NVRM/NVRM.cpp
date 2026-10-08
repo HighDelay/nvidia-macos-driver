@@ -717,7 +717,7 @@ bool NVRM::placeLargeBar1()
     // 10-07: with "Resizable BAR" off in the BIOS (or a card the firmware leaves at 256 MB) the firmware places a small
     // BAR1 over the boot screen and the driver had nothing to move. The card itself can resize: take the largest size it
     // supports between 4 GB and 8 GB, written below once the destination is proven free.
-    // 10-07 (NM-G68Y845E RTX 3060, NM-4XAED8CN RTX 5080): both cards resized to 16 GB stopped during bring-up (GSP boot,
+    // 10-07 (RTX 3060, RTX 5080): both cards resized to 16 GB stopped during bring-up (GSP boot,
     // NVAccel start), and the same RTX 3060 runs the desktop at 8 GB. 8 GB is the size proven on hardware (RTX 5060, 3060).
     UInt64 newSize = 0;
     if (bar1Size < (4ULL << 30)) {
@@ -759,7 +759,7 @@ bool NVRM::placeLargeBar1()
     IOService *pp = fPCI->getProvider();
     IOPCIDevice *rp = pp ? OSDynamicCast(IOPCIDevice, pp->getProvider()) : NULL;
     if (!rp || (rp->configRead8(0x0e) & 0x7f) != 1) { LOG("bar1: parent root port not found — not placing"); return false; }
-    // 10-07 (NM-Y6ME6FJ2, RTX 3070 eGPU on a MacBookPro16,1): only the parent bridge's window is reprogrammed below. Behind
+    // 10-07 (RTX 3070 eGPU on a MacBookPro16,1): only the parent bridge's window is reprogrammed below. Behind
     // Thunderbolt or a PCIe switch the parent is a downstream port, and the bridges above it keep their old windows, so the
     // moved BAR1/BAR3 were unreachable and RM failed kbusVerifyBar2 (NV_ERR_MEMORY_ERROR). Move only under a Root Port.
     {

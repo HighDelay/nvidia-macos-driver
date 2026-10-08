@@ -121,7 +121,7 @@ if [ -n "$COLLECT" ]; then
     echo; echo "== NVRM"; ioreg -r -n NVRM -d 1 -l 2>/dev/null | grep -E '"nvrm-'
     echo; echo "== system profile and per-system rules"; cat "$ST/system-profile.json" 2>/dev/null || echo "(none recorded)"
     sed -n '/^# --- 1401 per-system rules ---$/,/^# --- end 1401 per-system rules ---$/p' /Library/GPUBundles/nvmtl/nvrm610.conf 2>/dev/null
-    # 10-07 (NM-34FKN6ZK): a second user's install failed and nothing sent named the card. The GPU model and PCI ID
+    # 10-07: a second user's install failed and nothing sent named the card. The GPU model and PCI ID
     # are what decide which code path the driver takes (Turing/Ampere/Ada/Blackwell).
     echo; echo "== graphics"; system_profiler SPDisplaysDataType 2>/dev/null | grep -E "Chipset Model|Type:|Bus:|VRAM|Vendor|Device ID|Revision ID|Metal|Resolution|Display Type|Online"
     echo; echo "== NVIDIA PCI devices"; ioreg -r -c IOPCIDevice -d 1 -l 2>/dev/null | awk '
@@ -197,7 +197,7 @@ if [ $REMOVE = 1 ]; then
   if [ -n "$C" ]; then
     [ -f "$C" ] && plutil -lint "$C" >/dev/null || stop "the OpenCore config is missing or invalid - nothing changed"
     # The backup is used only when the config is unchanged since the install; otherwise the driver's settings are taken
-    # out of the current config in place. A missing backup stopped removal outright (support chat 10-08), although the
+    # out of the current config in place. A missing backup stopped removal outright (user reports 10-08), although the
     # in-place path below needs no backup at all - so it is a note, and that path runs.
     [ -f "$MP/${CONFIG_BACKUP_REL:-}" ] || note "the recorded OpenCore backup is not on this partition; the driver's settings are removed from the current config instead"
   fi
@@ -303,7 +303,7 @@ else
     fi
     n=$(echo $found | wc -w | tr -d ' ')
     if [ "$n" = 0 ]; then
-      # 10-07 (NM-HNQ1JK7A, an iMac20,1): the stop said only "no OpenCore config" - not whether the Mac runs Clover or
+      # 10-07 (an iMac20,1): the stop said only "no OpenCore config" - not whether the Mac runs Clover or
       # whether a config for ANOTHER model was there. Say what each partition holds, so the user (and the report) can tell.
       clover=""; for d in $(diskutil list | awk '/ EFI | DOS_FAT_32 | Windows_FAT_32 | Microsoft Basic Data /{print $NF}' | grep -E '^disk[0-9]+s[0-9]+$'); do
         mount_efi "$d" || { echo "NOTE $d: could not be mounted"; continue; }; mp=$MOUNT_POINT
@@ -320,7 +320,7 @@ else
     # A shared SMBIOS model or the macOS disk does not identify the booted EFI.
     # Retain candidate discovery, but require explicit selection without boot-path proof.
     # boot-path is published only when OpenCore's Misc > Security > ExposeSensitiveData has bit 0x1, and the usual
-    # value (6) does not: a Mac with exactly one OpenCore partition still stopped here (NM-PK5A09C6, 1401 Mac 1.0.17).
+    # value (6) does not: a Mac with exactly one OpenCore partition still stopped here (1401 Mac 1.0.17).
     # Second proof: OpenCore writes opencore-<time>.txt on the partition it started from at every boot (1401's configs
     # log to file). One candidate holding a log written within this boot's start window is that partition.
     if [ "$BOOT_BOUND" != 1 ]; then
@@ -448,7 +448,7 @@ fi
 
 if [ -n "$USBMAP" ]; then
   step "Installing the USB map"
-  # 10-07 (NM-HZTKJHPZ): 1401 Mac 1.0.1 passed the .kext itself, so "$USBMAP/UTBMap.kext" never existed and every map
+  # 10-07: 1401 Mac 1.0.1 passed the .kext itself, so "$USBMAP/UTBMap.kext" never existed and every map
   # stopped as "not valid". Take the folder holding the kext or the kext itself.
   case "$USBMAP" in */UTBMap.kext|*/UTBMap.kext/) K="${USBMAP%/}";; *) K="$USBMAP/UTBMap.kext";; esac
   [ -f "$K/Contents/Info.plist" ] || stop "the USB map the app wrote is missing ($K)"
