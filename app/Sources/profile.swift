@@ -1,8 +1,8 @@
 import Foundation
 import IOKit
 
-/// What decides which per-system rules apply: the NVIDIA card and its generation, the CPU, laptop or desktop, eGPU, the
-/// macOS major version, and the real board/chipset when the 1401 stick (which read them on Windows) is plugged in.
+/// Live GPU, CPU, platform and macOS properties select per-system rules.
+/// Unbound mounted board/chipset profiles are retained only as diagnostic evidence.
 enum Profile {
     /// NVIDIA's device-ID ranges per generation (GSP-capable cards only: Turing and later).
     static func arch(_ dev: String) -> String {
@@ -44,6 +44,14 @@ enum Profile {
                && v.range(of: #"^[A-Za-z0-9._-]{0,64}$"#, options: .regularExpression) != nil { conf[k] = v }
         }
         return (ids, conf)
+    }
+
+    /// Attached profiles have no binding to this boot configuration. Keep them
+    /// as diagnostic evidence; their board/chipset must not select live rules.
+    static func attachWindowsDiagnostics(_ candidates: [[String: Any]], to p: inout [String: Any]) {
+        guard !candidates.isEmpty else { return }
+        p["windows_candidates"] = candidates
+        p["windows_profile_status"] = "unverified"
     }
 
     /// True when a Thunderbolt bridge sits between the root complex and the NVIDIA card (an eGPU).

@@ -419,8 +419,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
               let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return [:] }
         return j
     }
-    /// This Mac's profile for the per-system rules. The PC's real board/chipset come from the 1401 stick when it is
-    /// plugged in (1401 for Windows writes NullMoth/system-profile.json; macOS only sees the SMBIOS model 1401 set).
+    /// Live properties select per-system rules. Attached Windows profiles are
+    /// diagnostic evidence until their identity is bound to this boot configuration.
     static func machineProfile(_ gpus: [[String: Any]]) -> [String: Any] {
         var p: [String: Any] = [:]
         if let nv = gpus.first(where: { $0["vendor"] as? String == "10DE" }), let dev = nv["device"] as? String {
@@ -433,14 +433,14 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         p["laptop"] = bat != 0; if bat != 0 { IOObjectRelease(bat) }
         p["egpu"] = Profile.nvidiaBehindThunderbolt()
         p["macos_major"] = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
-        for v in (try? FileManager.default.contentsOfDirectory(atPath: "/Volumes")) ?? [] {
+        var windowsProfiles: [[String: Any]] = []
+        for v in ((try? FileManager.default.contentsOfDirectory(atPath: "/Volumes")) ?? []).sorted() {
             if let d = try? Data(contentsOf: URL(fileURLWithPath: "/Volumes/\(v)/NullMoth/system-profile.json")),
                let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
-                p["windows"] = j
-                if let c = j["chipset"] as? String { p["chipset"] = c }
-                break
+                windowsProfiles.append(j)
             }
         }
+        Profile.attachWindowsDiagnostics(windowsProfiles, to: &p)
         return p
     }
 
