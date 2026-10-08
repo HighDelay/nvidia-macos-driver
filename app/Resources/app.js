@@ -27,9 +27,9 @@ function render(m) {
 
   // the driver package on this disk image: the Tahoe button needs it even when the driver is already running
   const pk = m.packages.find((p) => p.ok === "yes"); if (pk) S.pkg = pk.path;
-  $("upd").disabled = !S.pkg;
+  $("upd").disabled = !S.pkg || m.major !== 15 || !!why;
   if (on) {
-    $("verdict").innerHTML = `<p class="good">Your ${esc(card ? card.name : "NVIDIA card")} is running on the NullMoth driver.</p><p>Nothing to do. To move to macOS 26 Tahoe, use Prepare this Mac for Tahoe below. If you ever want the driver gone, use Remove the driver below.</p>`;
+    $("verdict").innerHTML = `<p class="good">Your ${esc(card ? card.name : "NVIDIA card")} is running on the NullMoth driver.</p><p>${m.major === 15 ? "To move to macOS 26 Tahoe, use Prepare this Mac for Tahoe below." : "macOS 26 is already installed; use Check for updates to update the driver."} To remove the driver, use Remove the driver below.</p>`;
     $("steps").hidden = true; return;
   }
   if (why) { $("verdict").innerHTML = `<p class="bad">Can't install here.</p><p>${why}</p>`; $("steps").hidden = true; return; }
@@ -63,6 +63,8 @@ const NM = {
     if (event === "lines") data.forEach(logLine);
     if (event === "dl") {
       if (data.state === "progress" && data.total > 0) $("dlp").textContent = Math.floor((100 * data.done) / data.total) + "%";
+      if (data.state === "start") ["dl", "updchk", "upddrv"].forEach((b) => ($(b).disabled = true));
+      if (data.state === "error" || data.state === "done") ["dl", "updchk", "upddrv"].forEach((b) => ($(b).disabled = false));
       if (data.state === "error") $("dlp").innerHTML = `<span class="bad">${esc(data.why)}</span>`;
       if (data.state === "done") { $("dlp").textContent = "done, checksum OK"; post({ act: "scan" }); }
     }
@@ -72,6 +74,7 @@ const NM = {
         const have = data.installed ? `installed ${esc(data.installed)}, ` : "";
         $("updr").innerHTML = data.newer ? `${have}newest ${esc(data.latest)} - ready to update.` : `${have}you have the newest driver (${esc(data.latest)}).`;
         $("upddrv").hidden = !data.newer;
+        $("upddrv").disabled = !data.newer;
       }
     }
     if (event === "run") {
@@ -117,9 +120,9 @@ const U = { ctrls: [], seen: {}, pick: {}, off: new Set() };
 function usbRender() {
   let h = "";
   for (const c of U.ctrls) {
-    const name = c.controller, seen = new Set(U.seen[name] || []);
+    const name = c.key || c.controller, seen = new Set(U.seen[name] || []);
     const n = Object.keys(U.pick[name] || {}).length;
-    h += `<table class="pc ports" border="1" cellspacing="2" cellpadding="3"><caption>Controller ${esc(name)} (${esc(c.vendor)}:${esc(c.device)}) &mdash; <span class="${n > 15 ? "bad" : ""}">${n} of 15 picked</span></caption><tr><th>Use</th><th>Port</th><th>Seen</th><th>Plug</th><th>Device now</th></tr>`;
+    h += `<table class="pc ports" border="1" cellspacing="2" cellpadding="3"><caption>Controller ${esc(c.controller)} (${esc(c.vendor)}:${esc(c.device)}) &mdash; <span class="${n > 15 ? "bad" : ""}">${n} of 15 picked</span></caption><tr><th>Use</th><th>Port</th><th>Seen</th><th>Plug</th><th>Device now</th></tr>`;
     for (const p of c.ports) {
       const on = seen.has(p.name), pk = (U.pick[name] || {})[p.name];
       const def = p.usb3 ? 3 : 0;
@@ -131,7 +134,7 @@ function usbRender() {
   $("ports").innerHTML = h;
   $("ports").querySelectorAll("input").forEach((i) => (i.onchange = () => {
     const c = i.dataset.c, p = i.dataset.p; U.pick[c] = U.pick[c] || {};
-    if (i.checked) { U.off.delete(c + "/" + p); U.pick[c][p] = +$("ports").querySelector(`select[data-c="${c}"][data-p="${p}"]`).value; } else { U.off.add(c + "/" + p); delete U.pick[c][p]; }
+    if (i.checked) { U.off.delete(c + "/" + p); U.pick[c][p] = +i.closest("tr").querySelector("select").value; } else { U.off.add(c + "/" + p); delete U.pick[c][p]; }
     usbRender();
   }));
   $("ports").querySelectorAll("select").forEach((s) => (s.onchange = () => { const c = s.dataset.c; if (U.pick[c] && s.dataset.p in U.pick[c]) U.pick[c][s.dataset.p] = +s.value; }));
@@ -146,8 +149,9 @@ NM.on = (m) => {
   if (m.event === "usb") {
     U.ctrls = m.data.controllers; U.seen = m.data.seen;
     for (const c of U.ctrls) {   // a port that has been seen is ticked automatically, with its default plug type
-      U.pick[c.controller] = U.pick[c.controller] || {};
-      for (const p of c.ports) if ((U.seen[c.controller] || []).includes(p.name) && !(p.name in U.pick[c.controller]) && !U.off.has(c.controller + "/" + p.name)) U.pick[c.controller][p.name] = p.usb3 ? 3 : 0;
+      const key = c.key || c.controller;
+      U.pick[key] = U.pick[key] || {};
+      for (const p of c.ports) if ((U.seen[key] || []).includes(p.name) && !(p.name in U.pick[key]) && !U.off.has(key + "/" + p.name)) U.pick[key][p.name] = p.usb3 ? 3 : 0;
     }
     usbRender(); return;
   }

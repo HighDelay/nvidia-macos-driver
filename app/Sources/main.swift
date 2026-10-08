@@ -8,10 +8,10 @@ import Metal
 import WebKit
 
 struct Package {
-    static let version = "1.0.8"
-    static let name = "nullmoth-nvidia-1.0.8.tar.gz"
-    static let url = URL(string: "https://github.com/nullmoth/nvidia-macos-driver/releases/download/v1.0.12/nullmoth-nvidia-1.0.8.tar.gz")!
-    static let sha256 = "459e874e889f5913f4c88956c09fd827f1a2bb2c4f39ab1bbcb8af9094366ba2"
+    static let version = "1.0.9"
+    static let name = "nullmoth-nvidia-1.0.9.tar.gz"
+    static let url = URL(string: "https://github.com/nullmoth/nvidia-macos-driver/releases/download/v1.0.13/nullmoth-nvidia-1.0.9.tar.gz")!
+    static let sha256 = "9dbfdb1b1359e2ef4166a46905ee195774b0b4ba20be083a8111ef550b1e5789"
 }
 let uploadPage = URL(string: "https://nullmothsystems.com/#send")!
 let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("NullMoth")
@@ -96,34 +96,54 @@ func usbControllers() -> [[String: Any]] {
             }
             IOObjectRelease(p)
         }
-        out.append(["controller": regName(parent), "vendor": String(format: "%04X", ven), "device": String(format: "%04X", dev),
+        out.append(["controller": regName(parent), "key": String(cString: path), "vendor": String(format: "%04X", ven), "device": String(format: "%04X", dev),
                     "path": String(cString: path), "ports": ports.sorted { ($0["port"] as! Int) < ($1["port"] as! Int) }])
         IOObjectRelease(parent); IOObjectRelease(x)
     }
     return out
 }
 
+func usbControllerKey(_ c: [String: Any]) -> String {
+    let key = c["key"] as? String ?? ""
+    return key.isEmpty ? (c["controller"] as? String ?? "") : key
+}
+
 func utbMap(_ ctrls: [[String: Any]], _ sel: [String: [String: Int]]) -> ([String: Any]?, String?) {
     var pers: [String: Any] = [:]
-    var ids = Set<String>()
+    let keys = Set(ctrls.map(usbControllerKey))
+    if sel.contains(where: { !keys.contains($0.key) && !$0.value.isEmpty }) { return (nil, "A selected USB controller is no longer present. Scan again.") }
+    var matches = Set<String>()
     for c in ctrls {
         let name = c["controller"] as! String
-        guard let chosen = sel[name], !chosen.isEmpty else { continue }
+        let key = usbControllerKey(c)
+        guard let chosen = sel[key], !chosen.isEmpty else { continue }
         if chosen.count > 15 { return (nil, "\(name) has \(chosen.count) ports picked; macOS allows 15 per controller. Untick some.") }
         let id = "0x\(c["device"]!)\(c["vendor"]!)"
-        if ids.contains(id) { return (nil, "Two USB controllers share the PCI id \(id); this mapper cannot tell them apart yet.") }
-        ids.insert(id)
+        let path = c["path"] as? String ?? ""
+        let sameId = ctrls.filter { "0x\($0["device"]!)\($0["vendor"]!)" == id }.count
+        if sameId > 1 && path.isEmpty { return (nil, "USB controllers share the PCI id \(id), but their registry paths are unavailable. Scan again.") }
+        let match = path.isEmpty ? id : path
+        if !matches.insert(match).inserted { return (nil, "Two selected USB controllers have the same identity. Scan again.") }
         var ports: [String: Any] = [:]
+        var highest: UInt32 = 0
+        var numbers = Set<UInt32>()
         for p in c["ports"] as! [[String: Any]] {
             let pn = p["name"] as! String
             guard let conn = chosen[pn] else { continue }
-            var n = UInt32(p["port"] as! Int).littleEndian
+            guard let number = p["port"] as? Int, number > 0, let value = UInt32(exactly: number), numbers.insert(value).inserted,
+                  [0, 3, 9, 10, 255].contains(conn) else { return (nil, "\(name) has an invalid port or connector selection. Scan again.") }
+            highest = max(highest, value)
+            var n = value.littleEndian
             ports[pn] = ["port": Data(bytes: &n, count: 4), "UsbConnector": conn,
                          "#comment": ((p["devices"] as? [String]) ?? []).joined(separator: ", ")]
         }
-        pers[name] = ["CFBundleIdentifier": "com.dhinakg.USBToolBox.kext", "IOClass": "USBToolBox", "IOMatchCategory": "USBToolBox",
+        if ports.count != chosen.count { return (nil, "Some selected ports on \(name) are no longer present. Scan again.") }
+        var top = highest.littleEndian
+        var personality: [String: Any] = ["CFBundleIdentifier": "com.dhinakg.USBToolBox.kext", "IOClass": "USBToolBox", "IOMatchCategory": "USBToolBox",
                       "IOPCIPrimaryMatch": id, "IOProviderClass": "IOPCIDevice",
-                      "IOProviderMergeProperties": ["ports": ports, "port-count": Data(bytes: [UInt8(ports.count), 0, 0, 0], count: 4)]]
+                      "IOProviderMergeProperties": ["ports": ports, "port-count": Data(bytes: &top, count: 4)]]
+        if !path.isEmpty { personality["IOPathMatch"] = path }
+        pers["Controller-\(pers.count)"] = personality
     }
     if pers.isEmpty { return (nil, "No ports picked.") }
     return (["CFBundleDevelopmentRegion": "English", "CFBundleIdentifier": "com.nullmoth.UTBMap", "CFBundleInfoDictionaryVersion": "6.0",
@@ -136,6 +156,24 @@ let crashDirs = ["/Library/Logs/DiagnosticReports", NSHomeDirectory() + "/Librar
 let seenFile = support.appendingPathComponent("crash-seen.json")
 
 let driverImages = ["NVMTLDriver", "libnvmtl_translate", "libvulkan_nouveau", "NVIDIAShared"]
+let supportCrashProcesses = ["firefox", "plugin-container", "Blender"]
+func supportCrashRank(_ name: String) -> Int? {
+    if name.hasPrefix("macos-WindowServer") { return 3 }
+    if supportCrashProcesses.contains(where: { name.lowercased().hasPrefix("macos-" + $0.lowercased() + "-") }) { return 3 }
+    return nil
+}
+
+func userApplicationCrashes() -> [URL] {
+    let fm = FileManager.default
+    let dir = URL(fileURLWithPath: crashDirs[1])
+    let files = ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
+        .filter { $0.pathExtension == "ips" }
+        .sorted { ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) >
+                  ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) }
+    return supportCrashProcesses.compactMap { process in
+        files.first { $0.lastPathComponent.lowercased().hasPrefix(process.lowercased() + "-") }
+    }
+}
 func involvesDriver(_ u: URL) -> Bool {
     guard let t = try? String(contentsOf: u, encoding: .utf8) else { return false }
     let body = t.split(separator: "\n", maxSplits: 1).last.map(String.init) ?? t
@@ -290,6 +328,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
     var table: [String: Any] = [:]
     var seenUsb: [String: Set<String>] = [:]
     var usbTimer: Timer?
+    var usbGeneration = 0
 
     func applicationDidFinishLaunching(_ n: Notification) {
         let res = Bundle.main.resourceURL!
@@ -418,12 +457,19 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
 
     // "Update driver": the newest driver release, not the version this app was built with. The package is checked against
     // the SHA256SUMS.txt published in the same release and installed by the normal install path (backup, OpenCore checks).
-    var dlName = Package.name, dlSha = Package.sha256
-    var dlThenInstall: String? = nil
-    // 10-07: install passed --sha Package.sha256 (the version this app was built with), so "Update driver" installing a
-    // NEWER package would stop at the setup script's checksum test. The update path passes the release's published hash.
-    var installSha: String? = nil
+    struct DownloadPlan {
+        let name: String
+        let sha: String
+        let efi: String?
+    }
+    var pendingDownload: (id: Int, plan: DownloadPlan)? = nil
+    var runningSetup = false
+    lazy var downloadSession = URLSession(configuration: .default, delegate: self, delegateQueue: .main)
     var latest: (version: String, name: String, url: URL, sha: String)? = nil
+    static func releaseDriverVersion(_ name: String) -> String? {
+        guard let match = name.range(of: #"^nullmoth-nvidia-([0-9]+\.[0-9]+(?:\.[0-9]+)?)\.tar\.gz$"#, options: .regularExpression) else { return nil }
+        return String(name[match].dropFirst("nullmoth-nvidia-".count).dropLast(".tar.gz".count))
+    }
     static func versionKey(_ v: String) -> [Int] { v.split(separator: ".").map { Int($0) ?? 0 } }
     static func newer(_ a: String, than b: String) -> Bool {
         let x = versionKey(a), y = versionKey(b)
@@ -445,8 +491,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
             for a in assets {
                 guard let n = a["name"] as? String, let u = (a["browser_download_url"] as? String).flatMap(URL.init(string:)), u.scheme == "https" else { continue }
                 if n == "SHA256SUMS.txt" { sums = u }
-                if let m = n.range(of: #"^nullmoth-nvidia-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.gz$"#, options: .regularExpression) {
-                    pkg = (String(n[m].dropFirst("nullmoth-nvidia-".count).dropLast(".tar.gz".count)), n, u)
+                if let version = App.releaseDriverVersion(n), pkg == nil || App.newer(version, than: pkg!.0) {
+                    pkg = (version, n, u)
                 }
             }
             guard let pkg, let sums else { return fail("the latest release has no driver package or no SHA256SUMS.txt") }
@@ -455,44 +501,59 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
                 let sha = txt.split(separator: "\n").compactMap { l -> String? in
                     let f = l.split(whereSeparator: { $0 == " " || $0 == "\t" }); return f.count >= 2 && f.last.map(String.init) == pkg.1 ? String(f[0]).lowercased() : nil }.first ?? ""
                 guard sha.count == 64 else { return fail("SHA256SUMS.txt does not list \(pkg.1)") }
-                self.latest = (pkg.0, pkg.1, pkg.2, sha)
+                DispatchQueue.main.async { self.latest = (pkg.0, pkg.1, pkg.2, sha) }
                 let have = self.installedDriverVersion()
                 self.send("upd", ["state": "checked", "latest": pkg.0, "installed": have,
                                   "newer": have.isEmpty || App.newer(pkg.0, than: have)])
             }.resume()
         }.resume()
     }
+    func startDownload(name: String, sha: String, url: URL, efi: String?) {
+        guard pendingDownload == nil, !runningSetup else { return }
+        do { try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true) }
+        catch { send("dl", ["state": "error", "why": error.localizedDescription]); return }
+        let task = downloadSession.downloadTask(with: url)
+        pendingDownload = (task.taskIdentifier, DownloadPlan(name: name, sha: sha, efi: efi))
+        send("dl", ["state": "start"])
+        task.resume()
+    }
     func updateDriver(efi: String) {
         guard let l = latest else { send("upd", ["state": "error", "why": "check for an update first"]); return }
-        dlName = l.name; dlSha = l.sha; dlThenInstall = efi
-        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
-        URLSession(configuration: .default, delegate: self, delegateQueue: nil).downloadTask(with: l.url).resume()
-        send("dl", ["state": "start"])
+        startDownload(name: l.name, sha: l.sha, url: l.url, efi: efi)
     }
     func download() {
-        dlName = Package.name; dlSha = Package.sha256; dlThenInstall = nil
-        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
-        URLSession(configuration: .default, delegate: self, delegateQueue: nil).downloadTask(with: Package.url).resume()
-        send("dl", ["state": "start"])
+        startDownload(name: Package.name, sha: Package.sha256, url: Package.url, efi: nil)
     }
     func urlSession(_ s: URLSession, downloadTask t: URLSessionDownloadTask, didWriteData b: Int64, totalBytesWritten w: Int64, totalBytesExpectedToWrite e: Int64) {
+        guard pendingDownload?.id == t.taskIdentifier else { return }
         send("dl", ["state": "progress", "done": w, "total": e])
     }
     func urlSession(_ s: URLSession, downloadTask t: URLSessionDownloadTask, didFinishDownloadingTo loc: URL) {
+        guard let pending = pendingDownload, pending.id == t.taskIdentifier else { return }
+        let plan = pending.plan
         let code = (t.response as? HTTPURLResponse)?.statusCode ?? 0
-        let dst = support.appendingPathComponent(dlName)
+        let dst = support.appendingPathComponent(plan.name)
         guard code == 200 else { send("dl", ["state": "error", "why": "the server answered HTTP \(code)"]); return }
-        guard sha256(loc) == dlSha else { send("dl", ["state": "error", "why": "the download does not match its SHA-256, so it was thrown away"]); return }
-        try? FileManager.default.removeItem(at: dst)
-        do { try FileManager.default.moveItem(at: loc, to: dst) } catch { send("dl", ["state": "error", "why": error.localizedDescription]); return }
+        guard sha256(loc) == plan.sha else { send("dl", ["state": "error", "why": "the download does not match its SHA-256, so it was thrown away"]); return }
+        do {
+            if FileManager.default.fileExists(atPath: dst.path) {
+                _ = try FileManager.default.replaceItemAt(dst, withItemAt: loc)
+            } else { try FileManager.default.moveItem(at: loc, to: dst) }
+        } catch { send("dl", ["state": "error", "why": error.localizedDescription]); return }
+        pendingDownload = nil
         send("dl", ["state": "done", "path": dst.path])
-        if let efi = dlThenInstall { dlThenInstall = nil; let sha = dlSha; DispatchQueue.main.async { self.installSha = sha; self.run(mode: "install", pkg: dst.path, efi: efi, extra: []) } }
+        if let efi = plan.efi {
+            run(mode: "install", pkg: dst.path, efi: efi, extra: [], expectedSha: plan.sha)
+        }
     }
     func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError e: Error?) {
+        guard pendingDownload?.id == task.taskIdentifier else { return }
+        pendingDownload = nil
         if let e { send("dl", ["state": "error", "why": e.localizedDescription]) }
     }
 
     func usbWatch(_ on: Bool) {
+        usbGeneration += 1
         usbTimer?.invalidate(); usbTimer = nil
         if on {
             seenUsb = [:]
@@ -501,15 +562,19 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         }
     }
     func usbTick() {
+        let generation = usbGeneration
         DispatchQueue.global().async {
             let c = usbControllers()
-            for ctl in c {
-                let n = ctl["controller"] as! String
-                for p in ctl["ports"] as! [[String: Any]] where !((p["devices"] as? [String]) ?? []).isEmpty {
-                    self.seenUsb[n, default: []].insert(p["name"] as! String)
+            DispatchQueue.main.async {
+                guard self.usbGeneration == generation else { return }
+                for ctl in c {
+                    let n = usbControllerKey(ctl)
+                    for p in ctl["ports"] as! [[String: Any]] where !((p["devices"] as? [String]) ?? []).isEmpty {
+                        self.seenUsb[n, default: []].insert(p["name"] as! String)
+                    }
                 }
+                self.send("usb", ["controllers": c, "seen": self.seenUsb.mapValues { Array($0) }])
             }
-            self.send("usb", ["controllers": c, "seen": self.seenUsb.mapValues { Array($0) }])
         }
     }
     func usbWrite(_ sel: [String: [String: Int]], efi: String) {
@@ -530,7 +595,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
     func sendLogs() {
         let a = NSAlert()
         a.messageText = "Send logs to NullMoth"
-        a.informativeText = "1401 is sending this Mac's NullMoth logs to nullmothsystems.com so the problem can be found and fixed: what 1401 did, the driver's state, driver crash reports, recent WindowServer crash reports, update diagnostics, and OpenCore's startup logs. Your name, your Mac's name, serial numbers and addresses are removed first. macOS asks for your password so 1401 can read the startup logs."
+        a.informativeText = "1401 is sending this Mac's NullMoth logs to nullmothsystems.com so the problem can be found and fixed: what 1401 did, the driver's state, driver crash reports, recent WindowServer, Firefox and Blender crash reports, update diagnostics, and OpenCore's startup logs. Your name, your Mac's name, serial numbers and addresses are removed first. macOS asks for your password so 1401 can read the startup logs."
         a.addButton(withTitle: "Send"); a.addButton(withTitle: "Cancel")
         guard a.runModal() == .alertFirstButtonReturn else { send("logsDone", ["ok": false, "why": "Not sent."]); return }
         DispatchQueue.global().async {
@@ -547,6 +612,10 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
                 .sorted { ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) >
                           ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) }
             files += mine.prefix(5)
+            for crash in userApplicationCrashes() {
+                let target = dir.appendingPathComponent("macos-" + crash.lastPathComponent)
+                if (try? fm.copyItem(at: crash, to: target)) != nil { files.append(target) }
+            }
             let crashes = driverCrashes(sinceInstallOnly: false)
             if !crashes.isEmpty {
                 let cr = dir.appendingPathComponent("crash-report.txt")
@@ -558,8 +627,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
             // the GPU state, kernel log, or crash report. Always send those first.
             let important = ["driver-state.txt", "driver-kernel-log.txt", "driver-plugin-log.txt", "crash-report.txt", "collect.txt", "driver-update-log.txt"]
             files.sort {
-                let a = $0.lastPathComponent.hasPrefix("macos-WindowServer") ? 3 : (important.firstIndex(of: $0.lastPathComponent) ?? important.count)
-                let b = $1.lastPathComponent.hasPrefix("macos-WindowServer") ? 3 : (important.firstIndex(of: $1.lastPathComponent) ?? important.count)
+                let a = supportCrashRank($0.lastPathComponent) ?? (important.firstIndex(of: $0.lastPathComponent) ?? important.count)
+                let b = supportCrashRank($1.lastPathComponent) ?? (important.firstIndex(of: $1.lastPathComponent) ?? important.count)
                 return a == b ? $0.lastPathComponent < $1.lastPathComponent : a < b
             }
             for f in files.prefix(12) {
@@ -602,7 +671,9 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         } else { send("crashDone", ["ok": false, "why": "Could not write the report to the Desktop."]) }
     }
 
-    func run(mode: String, pkg: String, efi: String, extra: [String]) {
+    func run(mode: String, pkg: String, efi: String, extra: [String], expectedSha: String? = nil) {
+        guard !runningSetup, pendingDownload == nil else { return }
+        runningSetup = true
         try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
         let log = logs.appendingPathComponent("setup-\(mode)-\(stamp).log")
@@ -613,9 +684,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         case "remove": args = ["--remove"]
         case "usbmap", "verbose", "update": args = extra
         default:
-            args = ["--pkg", pkg, "--sha", installSha ?? Package.sha256, "--tool", res.appendingPathComponent("NullMothSafe.efi").path,
+            args = ["--pkg", pkg, "--sha", expectedSha ?? Package.sha256, "--tool", res.appendingPathComponent("NullMothSafe.efi").path,
                     "--app", Bundle.main.executablePath ?? ""]
-            installSha = nil
             if mode == "dry" { args.append("--dry") }
             // per-system rules: this machine's profile picks the rules (nullmoth-rules.json); their knobs go to the setup script
             let prof = App.machineProfile(pciDisplays())
@@ -628,7 +698,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
             }
             args += extra
         }
-        if mode != "remove", efi != "auto", !efi.isEmpty { args += ["--efi", efi] }
+        if efi != "auto", !efi.isEmpty { args += ["--efi", efi] }
         let q = { (s: String) in "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
         let cmd = "/bin/bash \(q(res.appendingPathComponent("nullmoth-setup.sh").path)) \(args.map(q).joined(separator: " ")) >> \(q(log.path)) 2>&1"
         let asrc = "do shell script \"\(cmd.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\" with administrator privileges"
@@ -644,9 +714,15 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
             done.signal()
             Thread.sleep(forTimeInterval: 0.4)
             sent = self.flush(log, from: sent)
-            if let err, (err[NSAppleScript.errorNumber] as? Int) == -128 { self.send("run", ["state": "cancelled", "mode": mode]); return }
+            let cancelled = (err?[NSAppleScript.errorNumber] as? Int) == -128
             let text = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
-            self.send("run", ["state": "end", "mode": mode, "ok": text.contains("RESULT ok"), "log": log.path])
+            let result = text.split(separator: "\n").last(where: { $0.hasPrefix("RESULT ") })
+            let succeeded = err == nil && result == "RESULT ok"
+            DispatchQueue.main.async {
+                self.runningSetup = false
+                if cancelled { self.send("run", ["state": "cancelled", "mode": mode]) }
+                else { self.send("run", ["state": "end", "mode": mode, "ok": succeeded, "log": log.path]) }
+            }
         }
     }
     func flush(_ log: URL, from: Int) -> Int {

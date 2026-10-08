@@ -6,6 +6,8 @@ Your NVIDIA card drives the desktop, Metal apps, games, Core ML/MPS, and OpenCL 
 
 Made by **NullMoth Systems**.
 
+**Latest maintenance update:** [1401 Mac 1.0.13 / driver package 1.0.9](docs/RELEASE-1.0.13.md). See the change list, validation and remaining work before updating.
+
 Installing macOS from Windows? Use **1401**: https://github.com/nullmoth/1401
 
 > **This driver is new and may not work on every PC.** It is tested on an RTX 5060 under macOS 15.7.x and 15.8.1. Device-table coverage is broader than physical hardware validation; see [card support](docs/CARD-SUPPORT.md). If your PC does
