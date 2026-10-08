@@ -101,6 +101,7 @@ collect_recent_logs() {
 }
 
 if [ -n "$COLLECT" ]; then
+  trap cleanup EXIT HUP INT TERM
   # "Send logs": gather what only root can read into $COLLECT for the app to upload. Read-only on the system: it
   # copies files and prints state, and unmounts any EFI partition it mounted. Every OpenCore partition is checked,
   # sticks included, for OpenCore's own log (opencore-*.txt) and macOS panics it saved (panic-*.txt).

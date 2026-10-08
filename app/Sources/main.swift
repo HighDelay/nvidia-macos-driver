@@ -350,7 +350,26 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
     }
 
     func send(_ event: String, _ data: Any) {
-        guard let j = try? JSONSerialization.data(withJSONObject: ["event": event, "data": data]),
+        var payload = data
+        let state = (data as? [String: Any])?["state"] as? String
+        if (["dl", "upd"].contains(event) && ["start", "error"].contains(state ?? "")) || event == "usbErr" {
+            do {
+                let directory = try SavedReports.session(in: logs.appendingPathComponent("Reports"))
+                let record: [String: Any] = ["event": event, "data": data,
+                    "app_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unavailable",
+                    "helper_version": Package.version, "helper_sha256": Package.sha256,
+                    "os_version": ProcessInfo.processInfo.operatingSystemVersionString,
+                    "time": ISO8601DateFormatter().string(from: Date())]
+                _ = try SavedReports.create(Data(redact(json(record)).utf8), in: directory, name: "setup-" + event + ".txt")
+            } catch {
+                let warning = "The local operation report could not be saved: \(error.localizedDescription)"
+                if var fields = data as? [String: Any] {
+                    fields["why"] = ((fields["why"] as? String).map { $0 + " " } ?? "") + warning
+                    payload = fields
+                } else { payload = "\(data) \(warning)" }
+            }
+        }
+        guard let j = try? JSONSerialization.data(withJSONObject: ["event": event, "data": payload]),
               let s = String(data: j, encoding: .utf8) else { return }
         DispatchQueue.main.async { self.web.evaluateJavaScript("NM.on(\(s))") }
     }
@@ -630,13 +649,29 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         guard a.runModal() == .alertFirstButtonReturn else { send("logsDone", ["ok": false, "why": "Not sent."]); return }
         DispatchQueue.global().async {
             let fm = FileManager.default
-            let dir = fm.temporaryDirectory.appendingPathComponent("1401-logs-" + UUID().uuidString)
-            try? fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            let script = Bundle.main.resourceURL!.appendingPathComponent("nullmoth-setup.sh").path
+            let dir: URL
+            do {
+                dir = try SavedReports.session(in: logs.appendingPathComponent("Reports"))
+                _ = try SavedReports.create(Data("Log collection started. Files are retained locally after upload.\n".utf8), in: dir, name: "session.txt")
+            } catch {
+                DispatchQueue.main.async { self.send("logsDone", ["ok": false, "why": "Could not save a local report: \(error.localizedDescription)"]) }
+                return
+            }
+            let script = Bundle.main.resourceURL!.appendingPathComponent("nullmoth-log-capture.sh").path
             let q = { (x: String) in "'" + x.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-            let cmd = "/bin/bash \(q(script)) --collect-logs \(q(dir.path)) > \(q(dir.appendingPathComponent("collect.txt").path)) 2>&1"
+            let cmd = "/bin/bash \(q(script))"
             var err: NSDictionary?
-            NSAppleScript(source: "do shell script \"\(cmd.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\" with administrator privileges")?.executeAndReturnError(&err)
+            var collectionErrors: [String] = []
+            if let appleScript = NSAppleScript(source: "do shell script \"\(cmd.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\" with administrator privileges") {
+                let result = appleScript.executeAndReturnError(&err)
+                do { collectionErrors += try SavedReports.importCollection(result.stringValue ?? "", to: dir) }
+                catch { collectionErrors.append("System log collection was incomplete: \(error.localizedDescription)") }
+            } else { collectionErrors.append("System log collection could not be started.") }
+            if let error = err { collectionErrors.append(redact(error.description)) }
+            if !collectionErrors.isEmpty {
+                do { _ = try SavedReports.create(Data(collectionErrors.joined(separator: "\n").utf8), in: dir, name: "collection-errors.txt") }
+                catch { collectionErrors.append("The collector error summary could not be saved.") }
+            }
             if let executable = Bundle.main.executableURL {
                 let map = HardwareMapWorker.run(executable: executable)
                 let target = dir.appendingPathComponent("hardware-map.json")
@@ -646,10 +681,25 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
                 }
             }
             var files = ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
+            let sessions = (try? fm.contentsOfDirectory(at: logs.appendingPathComponent("Reports"), includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+            let retained = sessions.filter { $0 != dir }.flatMap { session in
+                ((try? fm.contentsOfDirectory(at: session, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
+                    .filter { $0.lastPathComponent.hasPrefix("setup-") || $0.lastPathComponent.hasPrefix("pending-") }
+            }
             let mine = ((try? fm.contentsOfDirectory(at: logs, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
                 .sorted { ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) >
                           ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) }
-            files += mine.prefix(5)
+            let pendingFiles = retained.filter { $0.lastPathComponent.hasPrefix("pending-") }
+            files += (mine + retained.filter { !$0.lastPathComponent.hasPrefix("pending-") })
+                .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
+                .sorted {
+                    let a = $0.lastPathComponent.hasPrefix("pending-")
+                    let b = $1.lastPathComponent.hasPrefix("pending-")
+                    if a != b { return a }
+                    return ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) <
+                           ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
+                }
+                .prefix(24)
             for crash in userApplicationCrashes() {
                 let target = dir.appendingPathComponent("macos-" + crash.lastPathComponent)
                 if (try? fm.copyItem(at: crash, to: target)) != nil { files.append(target) }
@@ -659,7 +709,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
                 let cr = dir.appendingPathComponent("crash-report.txt")
                 if writeReport(Array(crashes.prefix(3)), to: cr) { files.append(cr) }
             }
-            var ids: [String] = [], errs: [String] = []
+            var ids: [String] = [], errs: [String] = collectionErrors, acknowledgements: [[String: String]] = []
             let savedReceipt = support.appendingPathComponent("Diagnostics/diagnostic-receipt.json")
             if fm.fileExists(atPath: savedReceipt.path) {
                 do {
@@ -678,37 +728,58 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
             files.sort {
                 let a = supportCrashRank($0.lastPathComponent) ?? (important.firstIndex(of: $0.lastPathComponent) ?? important.count)
                 let b = supportCrashRank($1.lastPathComponent) ?? (important.firstIndex(of: $1.lastPathComponent) ?? important.count)
+                let pendingA = $0.lastPathComponent.hasPrefix("pending-")
+                let pendingB = $1.lastPathComponent.hasPrefix("pending-")
+                if pendingA != pendingB { return pendingA }
                 return a == b ? $0.lastPathComponent < $1.lastPathComponent : a < b
             }
             // One random value per send, shared by every file of it, so the site can group one run's logs. It names the
             // run, not the Mac: a new one each time.
             let batch = newUploadBatch()
-            for f in files.prefix(12) {
-                guard var data = try? Data(contentsOf: f), !data.isEmpty else { continue }
-                data.removeAll { $0 == 0 }   // the site refuses a text log with NUL bytes (OpenCore pads its log file)
-                let text = redact(String(decoding: data, as: UTF8.self))
-                let body = Data(text.utf8)
-                let sha = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+            let prepared: ReportQueue.Prepared
+            do {
+                prepared = try ReportQueue.prepare(files: files, pendingFiles: pendingFiles, in: dir) { data in
+                    var bytes = data; bytes.removeAll { $0 == 0 }
+                    return Data(redact(String(decoding: bytes, as: UTF8.self)).utf8)
+                }
+            } catch {
+                DispatchQueue.main.async { self.send("logsDone", ["ok": false, "why": "Could not save the report queue: \(error.localizedDescription)", "localPath": dir.path]) }
+                return
+            }
+            errs += prepared.warnings
+            let selected = ReportQueue.select(prepared.entries)
+            if prepared.entries.count > selected.count { errs.append("More reports are saved for the next Send logs attempt.") }
+            for entry in selected {
+                let body = entry.bytes, sha = entry.sha, name = entry.name
                 var req = URLRequest(url: URL(string: "https://nullmothsystems.com/api/upload")!, timeoutInterval: 60)
                 req.httpMethod = "POST"; req.httpBody = body
                 req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-                let name = f.lastPathComponent.hasSuffix(".txt") || f.lastPathComponent.hasSuffix(".log") ? f.lastPathComponent : f.lastPathComponent + ".txt"
                 req.setValue(name.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "log.txt", forHTTPHeaderField: "X-File-Name")
                 let meta = try! JSONSerialization.data(withJSONObject: ["consent": true, "notes": "1401 Mac \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") (driver \(Package.version)) logs (sent from the app)", "batch": batch])
                 req.setValue(meta.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: ""), forHTTPHeaderField: "X-Meta")
                 req.setValue(sha, forHTTPHeaderField: "X-Content-SHA256")
                 let done = DispatchSemaphore(value: 0)
-                URLSession.shared.dataTask(with: req) { d, _, e in
-                    if let d = d, let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
-                        if let id = j["id"] as? String, (j["sha256"] as? String ?? sha) == sha { ids.append(id) }
-                        else { errs.append("\(name): \(j["error"] as? String ?? "refused")") }
-                    } else { errs.append("\(name): \(e?.localizedDescription ?? "no answer")") }
+                let result = ReportUploadResult()
+                let task = URLSession.shared.dataTask(with: req) { data, response, error in
+                    result.finish(data: data, response: response, error: error, sha256: sha)
                     done.signal()
-                }.resume()
-                _ = done.wait(timeout: .now() + 90)
+                }
+                task.resume()
+                let timedOut = done.wait(timeout: .now() + 90) == .timedOut
+                if timedOut { task.cancel() }
+                let outcome = result.take(timedOut: timedOut)
+                if let id = outcome.0 {
+                    ids.append(id); acknowledgements.append(["name": name, "sha256": sha, "id": id])
+                    do { try ReportQueue.confirm(entry, id: id, in: dir) }
+                    catch { errs.append("\(name): confirmed, but its local retry marker could not be updated.") }
+                }
+                if let error = outcome.1 { errs.append("\(name): \(error)") }
             }
-            try? fm.removeItem(at: dir)
-            DispatchQueue.main.async { self.send("logsDone", ["ok": !ids.isEmpty, "ids": ids, "errors": errs]) }
+            do {
+                let receipt = try JSONSerialization.data(withJSONObject: ["batch": batch, "confirmed": acknowledgements, "errors": errs], options: [.prettyPrinted, .sortedKeys])
+                _ = try SavedReports.create(receipt, in: dir, name: "upload-receipt.json")
+            } catch { errs.append("The upload receipt could not be saved; collected files remain locally.") }
+            DispatchQueue.main.async { self.send("logsDone", ["ok": !ids.isEmpty, "ids": ids, "errors": errs, "localPath": dir.path]) }
         }
     }
 
@@ -727,10 +798,15 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         guard ["dry", "install", "remove", "usbmap", "verbose"].contains(mode),
               !runningSetup, pendingDownload == nil else { return }
         runningSetup = true
-        try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
-        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
-        let log = logs.appendingPathComponent("setup-\(mode)-\(stamp).log")
-        FileManager.default.createFile(atPath: log.path, contents: nil)
+        let log: URL
+        do {
+            let directory = try SavedReports.session(in: logs.appendingPathComponent("Reports"))
+            log = try SavedReports.create(Data("Setup \(mode) started.\n".utf8), in: directory, name: "setup-\(mode).log")
+        } catch {
+            runningSetup = false
+            send("run", ["state": "end", "mode": mode, "ok": false, "why": "Could not save a local report: \(error.localizedDescription)"])
+            return
+        }
         let res = Bundle.main.resourceURL!
         var args: [String]
         switch mode {
@@ -753,24 +829,46 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         }
         if efi != "auto", !efi.isEmpty { args += ["--efi", efi] }
         let q = { (s: String) in "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-        let cmd = "/bin/bash \(q(res.appendingPathComponent("nullmoth-setup.sh").path)) \(args.map(q).joined(separator: " ")) >> \(q(log.path)) 2>&1"
+        let cmd = "/bin/bash \(q(res.appendingPathComponent("nullmoth-operation-capture.sh").path)) \(args.map(q).joined(separator: " "))"
         let asrc = "do shell script \"\(cmd.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\" with administrator privileges"
         send("run", ["state": "start", "mode": mode, "log": log.path])
         DispatchQueue.global().async {
-            let done = DispatchSemaphore(value: 0)
-            var sent = 0
-            DispatchQueue.global().async {
-                while done.wait(timeout: .now() + 0.3) == .timedOut { sent = self.flush(log, from: sent) }
-            }
             var err: NSDictionary?
-            NSAppleScript(source: asrc)?.executeAndReturnError(&err)
-            done.signal()
-            Thread.sleep(forTimeInterval: 0.4)
-            sent = self.flush(log, from: sent)
+            var captureFailed = false
+            if let script = NSAppleScript(source: asrc) {
+                let result = script.executeAndReturnError(&err)
+                do {
+                    let directory = log.deletingLastPathComponent()
+                    let warnings = try SavedReports.importCollection(result.stringValue ?? "", to: directory)
+                    for name in ["setup-output.txt", "setup-output-head.txt", "setup-output-tail.txt"] {
+                        let file = directory.appendingPathComponent(name)
+                        if FileManager.default.fileExists(atPath: file.path) {
+                            try SavedReports.append(Data(contentsOf: file), to: log)
+                        }
+                    }
+                    for warning in warnings { try SavedReports.append(Data(("\n" + warning + "\n").utf8), to: log) }
+                    captureFailed = !warnings.isEmpty
+                } catch {
+                    captureFailed = true
+                    let message = "Could not retain setup output: \(error.localizedDescription)"
+                    do { _ = try SavedReports.create(Data(message.utf8), in: log.deletingLastPathComponent(), name: "setup-capture-error.txt") }
+                    catch { self.send("lines", ["The capture error could not be saved: \(error.localizedDescription)"]) }
+                    self.send("lines", [message])
+                }
+            } else {
+                captureFailed = true
+                self.send("lines", ["Could not start the setup command."])
+            }
+            _ = self.flush(log, from: 0)
             let cancelled = (err?[NSAppleScript.errorNumber] as? Int) == -128
+            if let error = err {
+                let message = redact(error.description)
+                do { _ = try SavedReports.create(Data(message.utf8), in: log.deletingLastPathComponent(), name: "setup-launch-error.txt") }
+                catch { DispatchQueue.main.async { self.send("lines", ["Could not save the setup error: \(error.localizedDescription)"]) } }
+            }
             let text = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
             let result = text.split(separator: "\n").last(where: { $0.hasPrefix("RESULT ") })
-            let succeeded = err == nil && result == "RESULT ok"
+            let succeeded = err == nil && !captureFailed && result == "RESULT ok"
             DispatchQueue.main.async {
                 self.runningSetup = false
                 if cancelled { self.send("run", ["state": "cancelled", "mode": mode]) }

@@ -80,6 +80,7 @@ const NM = {
       const busy = data.state === "start";
       ["dry", "go", "rm", "dl", "updchk", "upddrv"].forEach((b) => ($(b).disabled = busy));
       if (busy) { $("logwrap").hidden = false; $("log").textContent = ""; return; }
+      if (data.why) { $("logwrap").hidden = false; logLine(data.why); }
       if (data.state === "cancelled") { logLine("NOTE cancelled - nothing was changed"); post({ act: "scan" }); return; }
       if (data.mode === "dry" && data.ok) { S.previewed = true; step(2, "done"); step(3, "now"); }
       if (data.mode === "install" && data.ok) { S.installed = true; step(3, "done"); step(4, "now"); $("rs").disabled = false; }
@@ -169,6 +170,7 @@ NM.on = (m) => {
     $("sl").disabled = false;
     $("slr").innerHTML = d.ok ? `<span class="good">Sent. Report ID ${esc(d.ids.join(", "))}</span> - quote it when you ask for help.` + (d.errors.length ? `<br><span class="warn">Not sent: ${esc(d.errors.join("; "))}</span>` : "")
                               : `<span class="warn">${esc(d.why || ("Nothing was sent: " + (d.errors || []).join("; ")))}</span>`;
+    if (d.localPath) $("slr").innerHTML += "<br>Report files are saved locally. Open Logs to find them or retry Send logs.";
     return;
   }
   if (m.event === "crashDone") { $("cr").innerHTML = m.data.ok ? `<span class="good">Saved to your Desktop:</span> ${esc(m.data.path.split("/").pop())}` : `<span class="warn">${esc(m.data.why)}</span>`; return; }
