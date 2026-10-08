@@ -2,11 +2,11 @@
 
 A Metal driver for NVIDIA Turing-and-later cards on Intel Macs and OpenCore systems running **macOS 15 Sequoia**.
 The device table includes GTX 16, RTX 20/30/40/50, TITAN RTX, and supported Quadro/RTX workstation cards.
-Your NVIDIA card drives the desktop, Metal apps, games, Core ML/MPS, and OpenCL — the way an Apple-supported GPU does.
+The driver implements NVIDIA-backed display and Metal interfaces. Feature availability and application behavior depend on the card, operating-system version and installed components; device-table coverage is not runtime qualification.
 
 Made by **NullMoth Systems**.
 
-**Latest maintenance update:** [1401 Mac 1.0.16 / driver package 1.0.10](docs/RELEASE-1.0.16.md). See the change list, validation and remaining work before updating.
+**Latest maintenance update:** [1401 Mac 1.0.17 / driver helper package 1.0.11](docs/RELEASE-1.0.17.md). See the change list, validation and remaining work before updating.
 
 Installing macOS from Windows? Use **1401**: https://github.com/nullmoth/1401
 

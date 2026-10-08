@@ -14,8 +14,22 @@ K=/System/Library/Kernels/kernel
 KARG=(--allow-missing-kdk); [ -f "$K" ] && KARG+=(--kernel "$K")
 KB=/System/Library/KernelCollections/BootKernelExtensions.kc
 KS=/System/Library/KernelCollections/SystemKernelExtensions.kc
-BK=/Library/NullMoth/backup-$(date +%Y%m%d-%H%M%S)
+BK=""; LOCKDIR=/Library/NullMoth/install.lock; LOCK_HELD=0; LOCK_RELEASE_OK=1; LOCK_ID=""
 INSTALLING=0; NEWKC=""
+release_install_lock() {
+  if [ "$LOCK_HELD" = 1 ] && [ "$LOCK_RELEASE_OK" = 1 ]; then
+    if [ -z "$LOCK_ID" ] || [ -L "$LOCKDIR" ] || [ ! -d "$LOCKDIR" ] ||
+       [ "$(stat -f '%d:%i' "$LOCKDIR" 2>/dev/null)" != "$LOCK_ID" ]; then
+      echo "   NOTE: installer guard identity changed; its current path is retained for review." >&2
+      return
+    fi
+    rmdir "$LOCKDIR" || echo "   NOTE: installer lock could not be released; review it before another install." >&2
+    LOCK_HELD=0
+  elif [ "$LOCK_HELD" = 1 ]; then
+    echo "   NOTE: installer guard retained because restoration was incomplete; recovery review is required." >&2
+  fi
+}
+
 rollback_install() {
   local failed=0 k b
   [ -z "$NEWKC" ] || rm -f "$NEWKC" || failed=1
@@ -41,10 +55,27 @@ die() {
   echo "   STOP: $*" >&2
   if [ "$INSTALLING" = 1 ]; then
     if rollback_install; then echo "   Previous installation restored; backup retained at $BK." >&2
-    else echo "   Restore incomplete; recovery files remain at $BK." >&2; fi
+    else LOCK_RELEASE_OK=0; echo "   Restore incomplete; recovery files remain at $BK." >&2; fi
   fi
   exit 1
 }
+
+# Keep diagnostic output bounded while retaining the copy command's exit status.
+backup_copy() {
+  local component=$1; shift
+  "$@" 2>&1 | tail -c 4096 > "$T/backup-error.log"
+  local status=("${PIPESTATUS[@]}")
+  if [ "${status[0]}" != 0 ] || [ "${status[1]}" != 0 ]; then
+    printf '   BACKUP-DIAGNOSTIC component=%s command-status=%s capture-status=%s stderr-tail-limit=4096\n' "$component" "${status[0]}" "${status[1]}" >&2
+    [ ! -f "$T/backup-error.log" ] || cat "$T/backup-error.log" >&2
+    echo >&2
+    die "back up $component"
+  fi
+}
+trap release_install_lock EXIT
+trap 'die "installer interrupted (signal HUP)"' HUP
+trap 'die "installer interrupted (signal INT)"' INT
+trap 'die "installer interrupted (signal TERM)"' TERM
 
 [ "$(id -u)" -eq 0 ] || die "run with sudo"
 step "1. this Mac"
@@ -71,6 +102,35 @@ RUNTIME_PREFLIGHT="$(cd "$(dirname "$0")" && pwd)/nullmoth-runtime-check.sh"
 [ -x "$RUNTIME_PREFLIGHT" ] || die "runtime compatibility checker is missing"
 /bin/bash "$RUNTIME_PREFLIGHT" "$HERE" "$v" || die "userland runtime cannot load on this macOS version"
 
+require_install_directory() {
+  local metadata permissions entry
+  [ ! -L "$1" ] && [ -d "$1" ] || die "installer parent must be a real directory (no driver changes made)"
+  metadata=$(stat -f '%u %Lp' "$1" 2>/dev/null) || die "cannot verify installer parent ownership"
+  case "$metadata" in
+    "0 "[0-7][0-7][0-7]|"0 "[0-7][0-7][0-7][0-7]) ;;
+    *) die "installer parent is not a verified root-owned directory (no driver changes made)";;
+  esac
+  permissions=${metadata#* }
+  [ $((8#$permissions & 022)) -eq 0 ] || die "installer parent is writable by another account or group (no driver changes made)"
+  entry=$(ls -lde "$1" 2>/dev/null | head -1 | awk '{print $1}')
+  [ -n "$entry" ] || die "cannot inspect installer parent access controls"
+  case "$entry" in *+*) die "installer parent has unreviewed access-control entries (no driver changes made)";; esac
+}
+
+# The installer owns this guard from preflight through commit/rollback. Never
+# remove a pre-existing guard: it may belong to an active or interrupted install.
+if [ "${CHECK:-0}" != 1 ]; then
+  require_install_directory /Library
+  if [ ! -e /Library/NullMoth ] && [ ! -L /Library/NullMoth ]; then
+    mkdir -m 755 /Library/NullMoth || die "create installer state directory"
+  fi
+  require_install_directory /Library/NullMoth
+  mkdir -m 700 "$LOCKDIR" 2>/dev/null || die "installer guard already exists; another install is active or an interrupted guard needs review (no driver changes made)"
+  LOCK_HELD=1
+  LOCK_ID=$(stat -f '%d:%i' "$LOCKDIR" 2>/dev/null) || die "cannot record installer guard identity"
+  printf '%s\n' "$LOCK_ID" | grep -Eq '^[0-9]+:[0-9]+$' || die "installer guard identity is unavailable"
+fi
+
 step "3. test kernel collection"
 T=$(mktemp -d /var/tmp/nullmoth.XXXX) && [ -n "$T" ] && mkdir -p "$T/repo" || die "create private preflight directory"
 for x in "$EXT"/*.kext; do [ -d "$x" ] || continue; n=$(basename "$x" .kext); case " $KEXTS " in *" $n "*) ;; *) cp -R "$x" "$T/repo/" || die "stage third-party kext $n";; esac; done
@@ -84,15 +144,15 @@ for k in $KEXTS; do printf '%s\n' "$INS" | grep -oE 'com\.nullmoth\.[A-Za-z0-9]+
 ok "test collection holds all four kexts"
 [ "${CHECK:-0}" = 1 ] && { rm -rf "$T"; echo; echo "CHECK PASS (nothing changed)"; exit 0; }
 
+BK=$(mktemp -d "/Library/NullMoth/backup-$(date +%Y%m%d-%H%M%S).XXXXXX") && [ -n "$BK" ] && [ -d "$BK" ] || die "create unique backup directory"
 step "4. back up what is there now -> $BK"
-mkdir -p "$BK" || die "create backup directory"
 printf '%s\n' "$BUILD" > "$BK/macos-build" || die "record backup macOS build"
-for k in $KEXTS; do [ ! -e "$EXT/$k.kext" ] || cp -Rp "$EXT/$k.kext" "$BK/" || die "back up $k"; done
-for b in NVMTLDriver.bundle NVIDIAShared.bundle nvmtl nvmtl-allow.txt; do [ ! -e "$GB/$b" ] || cp -Rp "$GB/$b" "$BK/" || die "back up $b"; done
-[ ! -f "$KC" ] || cp -p "$KC" "$BK/AuxiliaryKernelExtensions.kc" || die "back up kernel collection"
-[ ! -d /Library/NullMoth/kexts ] || ditto /Library/NullMoth/kexts "$BK/kexts" || die "back up cached accelerators"
-[ ! -f /Library/NullMoth/os-major ] || cp -p /Library/NullMoth/os-major "$BK/os-major" || die "back up OS record"
-[ ! -d "$FW" ] || ditto "$FW" "$BK/nvfw" || die "back up firmware"
+for k in $KEXTS; do [ ! -e "$EXT/$k.kext" ] || backup_copy "$k" cp -Rp "$EXT/$k.kext" "$BK/"; done
+for b in NVMTLDriver.bundle NVIDIAShared.bundle nvmtl nvmtl-allow.txt; do [ ! -e "$GB/$b" ] || backup_copy "$b" cp -Rp "$GB/$b" "$BK/"; done
+[ ! -f "$KC" ] || backup_copy "kernel collection" cp -p "$KC" "$BK/AuxiliaryKernelExtensions.kc"
+[ ! -d /Library/NullMoth/kexts ] || backup_copy "cached accelerators" ditto /Library/NullMoth/kexts "$BK/kexts"
+[ ! -f /Library/NullMoth/os-major ] || backup_copy "OS record" cp -p /Library/NullMoth/os-major "$BK/os-major"
+[ ! -d "$FW" ] || backup_copy firmware ditto "$FW" "$BK/nvfw"
 ok "backup written"
 
 step "5. install"

@@ -23,6 +23,12 @@ elif name=='uname':print('x86_64')
 elif name=='sw_vers':print('25G241' if a==['-buildVersion'] else os.environ.get('FAKE_OS_VERSION','26.7.1'))
 elif name=='ioreg':print('"vendor-id" = <de100000>')
 elif name=='nvram':print('boot-args\tnvfb=1 nvaccel=1')
+elif name=='stat':
+ p=Path(a[-1]);info=p.lstat()
+ if a[1]=='%u %Lp':print(os.environ.get('FAKE_INSTALLER_OWNER','0')+' '+format(info.st_mode&0o7777,'o'))
+ elif a[1]=='%d:%i':print(str(info.st_dev)+':'+str(info.st_ino))
+ else:sys.exit(98)
+
 elif name=='chown':pass
 elif name=='mktemp':
  counter=r/'temps';n=int(counter.read_text())+1 if counter.exists() else 1;counter.write_text(str(n))
@@ -83,7 +89,7 @@ class Install(unittest.TestCase):
             p=self.root/rel;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(value);self.old[p]=p.read_bytes()
         other=self.root/'Library/Extensions/NVMeFix.kext/fixture';other.parent.mkdir();other.write_text('unrelated');other.chmod(0o400);self.other=other
         self.bin=self.root/'bin';self.bin.mkdir()
-        for name in ['id','uname','sw_vers','ioreg','nvram','chown','mktemp','kmutil']:
+        for name in ['id','uname','sw_vers','ioreg','nvram','chown','mktemp','kmutil','stat']:
             p=self.bin/name;p.write_text('#!'+sys.executable+'\n'+MOCK);p.chmod(0o755)
         source=(REPO/'package/install.sh').read_text()
         # Every installed path points into the private fixture. Real kmutil/ioreg/id are shadowed.
@@ -92,6 +98,7 @@ class Install(unittest.TestCase):
         for prefix in ['/Library/','/System/','/Users/Shared/']:source=source.replace(prefix,str(self.root)+prefix)
         for prefix in ['Library/','Users/Shared/']:
             source=source.replace('$HERE/__PAYLOAD_'+prefix.replace('/','_')+'__','$HERE/'+prefix)
+        source=source.replace('require_install_directory /Library\n','require_install_directory '+str(self.root/'Library')+'\n')
         self.script=self.payload/'install.sh';self.script.write_text(source)
         self.env=dict(os.environ,FIXTURE_ROOT=str(self.root),PATH=str(self.bin)+':/usr/bin:/bin:/usr/sbin:/sbin')
     def tearDown(self):self.temp.cleanup()
