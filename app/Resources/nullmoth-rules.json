@@ -16,6 +16,13 @@
       "match": {"arch": ["turing"]}
     },
     {
+      "id": "turing-uncached-gpu-memory",
+      "why": "On Turing the desktop starts only when command buffers and system memory are not cached by the GPU; an RTX 2060 SUPER boot-looped at login without these two knobs and loads to a Metal 3 desktop with them (driver 1.0.11, no boot-arg needed).",
+      "evidence": ["GitHub issue 5 RTX 2060 SUPER: CE0 runlist errors, login loop; fixed by these two knobs alone"],
+      "match": {"arch": ["turing"]},
+      "conf": {"NVK_CMDPOOL_GPU_UNCACHED": "1", "NVK_SYSMEM_GPU_UNCACHED": "1"}
+    },
+    {
       "id": "image-size-pre-blackwell",
       "builtin": true,
       "why": "Tiled images are sized to the 64 KB range they are bound with, before Blackwell (driver 1.0.6/1.0.7).",

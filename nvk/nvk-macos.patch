@@ -3695,7 +3695,7 @@ diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --
 +{
 +   const char *e = getenv(name);
 +   if (e) return e;
-+   static char conf[1024]; static int loaded;
++   static char conf[8192]; static int loaded;
 +   if (!loaded) {
 +      loaded = 1;
 +      FILE *f = fopen("/Library/GPUBundles/nvmtl/nvrm610.conf", "r");
@@ -6298,7 +6298,7 @@ diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --
 +{
 +   const char *e = getenv(name);
 +   if (e) return e;
-+   static char conf[1024]; static int loaded;
++   static char conf[8192]; static int loaded;
 +   if (!loaded) {
 +      loaded = 1;
 +      FILE *f = fopen("/Library/GPUBundles/nvmtl/nvrm610.conf", "r");
@@ -8030,7 +8030,7 @@ diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --
 +
 +
 +   if (!e) {
-+      static char conf[512]; static int loaded;
++      static char conf[8192]; static int loaded;
 +      if (!loaded) {
 +         loaded = 1;
 +         FILE *f = fopen("/Library/GPUBundles/nvmtl/nvrm610.conf", "r");
@@ -8107,7 +8107,7 @@ diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --
 +{
 +   const char *e = getenv(name);
 +   if (e) return e;
-+   static char conf[1024]; static int loaded;
++   static char conf[8192]; static int loaded;
 +   if (!loaded) {
 +      loaded = 1;
 +      FILE *f = fopen("/Library/GPUBundles/nvmtl/nvrm610.conf", "r");
@@ -11812,7 +11812,7 @@ diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --
 +{
 +   const char *e = getenv(name);
 +   if (e) return e;
-+   static char conf[2048]; static int loaded;
++   static char conf[8192]; static int loaded;
 +   if (!loaded) {
 +      loaded = 1;
 +      FILE *f = fopen("/Library/GPUBundles/nvmtl/nvrm610.conf", "r");
