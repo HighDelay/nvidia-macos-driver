@@ -157,6 +157,32 @@ if [ -n "$COLLECT" ]; then
     [ -f "$f" ] || continue
     { echo; echo "== plugin file log"; tail -c 262144 "$f"; } >> "$COLLECT/driver-plugin-log.txt"
   done
+  # The rolling logs above keep only the newest lines, so the boot where WindowServer actually crashed was usually
+  # gone by the time the user sent logs: eight crash reports in one day named the abort ("Failed to create
+  # MetalDevice") but none carried the plugin's reason. For each recent WindowServer crash, keep the driver's own
+  # lines from two minutes before it to just after it. The report's timestamp is local time, as log show expects.
+  {
+    for ips in $(ls -t /Library/Logs/DiagnosticReports/WindowServer*.ips /Library/Logs/DiagnosticReports/Retired/WindowServer*.ips 2>/dev/null | head -n 3); do
+      stamp=$(head -n 1 "$ips" 2>/dev/null | sed -n 's/.*"timestamp" *: *"\([0-9-]* [0-9:]*\)[^"]*".*/\1/p')
+      echo; echo "== WindowServer crash ${ips##*/} at ${stamp:-unknown time}"
+      [ -n "$stamp" ] || { echo "(no timestamp in the report)"; continue; }
+      at=$(date -j -f "%Y-%m-%d %H:%M:%S" "$stamp" "+%s" 2>/dev/null) || { echo "(timestamp not understood: $stamp)"; continue; }
+      from=$(date -j -r $((at - 120)) "+%Y-%m-%d %H:%M:%S"); to=$(date -j -r $((at + 5)) "+%Y-%m-%d %H:%M:%S")
+      # log show runs past --end (measured: an 11:26:47 end returned lines to 11:28:20), so lines are cut at "to" here.
+      # Separate budgets: on a busy GPU the kernel lines alone filled a shared 1500-line tail and pushed out the
+      # plugin's and WindowServer's own reason (measured: 1482 of 1500 lines were kernel lines).
+      echo "-- plugin and WindowServer errors"
+      log show --start "$from" --end "$to" --style compact --predicate '(process != "kernel" AND (eventMessage CONTAINS[c] "NVMTL" OR eventMessage CONTAINS[c] "NullMoth" OR eventMessage CONTAINS[c] "nvk-reason" OR eventMessage CONTAINS[c] "MetalDevice")) OR (process == "WindowServer" AND (messageType == error OR messageType == fault))' 2>&1 \
+        | awk -v to="$to" '!/^20[0-9][0-9]-/ || substr($0, 1, 19) <= to' \
+        | tail -n 700
+      echo "log show exit: ${PIPESTATUS[0]}"
+      echo "-- kernel driver lines"
+      log show --start "$from" --end "$to" --style compact --predicate 'process == "kernel" AND (eventMessage CONTAINS[c] "nvrm" OR eventMessage CONTAINS[c] "nvaccel" OR eventMessage CONTAINS[c] "gsp")' 2>&1 \
+        | awk -v to="$to" '!/^20[0-9][0-9]-/ || substr($0, 1, 19) <= to' \
+        | tail -n 800
+      echo "log show exit: ${PIPESTATUS[0]}"
+    done
+  } > "$COLLECT/driver-crash-window.txt" 2>&1
   n=0; collection_errors=0
   collect_recent_logs macos 3 /Library/Logs/DiagnosticReports/*.panic
   # WindowServer can fail outside a driver frame. Include the complete recent reports
