@@ -141,6 +141,6 @@ with tempfile.TemporaryDirectory(prefix="nullmoth-card-log-tests-") as directory
     assert swift.count(start) == swift.count(stop) == 1
     redact = start + swift.split(start, 1)[1].split(stop, 1)[0]
     fixture = tmp / "redact.swift"
-    fixture.write_text(REDACTION.replace("PRODUCTION", redact))
+    fixture.write_text(REDACTION.replace("PRODUCTION", (ROOT / "app/Sources/redaction.swift").read_text() + redact))
     subprocess.run(["xcrun", "swift", str(fixture)], check=True)
 print("PASS card-log collection regressions")

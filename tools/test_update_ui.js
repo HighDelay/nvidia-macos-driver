@@ -30,11 +30,25 @@ const machine = (major) => ({version:'1.1', macos:String(major), major, arch:'x8
   gpus:[{vendor:'10DE', name:'NVIDIA RTX 5060', supported:true, tested:true}],
   kexts:4, metal:['NVIDIA RTX 5060'], opencore:'1.0.6', files:true,
   packages:[{ok:'yes',path:'/tmp/driver.tar.gz'}]});
-event('scan',machine(26));
-assert.equal(element('upd').disabled,true);
-assert(element('verdict').innerHTML.includes('macOS 26 is already installed'));
-event('scan',machine(15));
-assert.equal(element('upd').disabled,false);
-const unsupported=machine(15);unsupported.opencore='';
-event('scan',unsupported);assert.equal(element('upd').disabled,true);
-console.log('Tahoe preparation is enabled only for a supported macOS 15 upgrade.');
+for (const major of [15,26]) {
+  event('scan',machine(major));
+  assert(element('verdict').innerHTML.includes('Check for a newer driver'));
+  assert(!element('verdict').innerHTML.includes('Prepare'));
+}
+for (const name of ['upd','swu','updc']) assert.equal(elements.has(name),false);
+const html=fs.readFileSync(__dirname+'/../app/Resources/index.html','utf8');
+for (const name of ['upd','swu','updc']) assert(!html.includes('id="'+name+'"'));
+const native=fs.readFileSync(__dirname+'/../app/Sources/main.swift','utf8');
+assert(!native.includes('case "osupdate":'));
+assert(!native.includes('case "swupdate":'));
+assert(!native.includes('["--update", "prepare"]'));
+assert(!native.includes('["--update", "cancel"]'));
+assert(native.includes('AppActions.directRunMode(b["mode"])'));
+console.log('Preparation UI and native actions removed; normal driver updates remain.');
+
+event('run',{state:'done', mode:'dry', ok:true});
+element('efi').value='disk2s1';
+element('efi').onchange();
+assert.equal(element('go').disabled,true);
+assert.equal(vm.runInContext('S.previewed',sandbox),false);
+console.log('Changing the selected EFI requires a fresh preview before install.');

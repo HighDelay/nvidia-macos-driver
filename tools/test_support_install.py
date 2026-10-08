@@ -20,7 +20,7 @@ name=Path(sys.argv[0]).name;a=sys.argv[1:];r=Path(os.environ['FIXTURE_ROOT'])
 with (r/'calls.jsonl').open('a') as f:f.write(json.dumps([name]+a)+'\n')
 if name=='id':print('0')
 elif name=='uname':print('x86_64')
-elif name=='sw_vers':print('25G241' if a==['-buildVersion'] else '26.7.1')
+elif name=='sw_vers':print('25G241' if a==['-buildVersion'] else os.environ.get('FAKE_OS_VERSION','26.7.1'))
 elif name=='ioreg':print('"vendor-id" = <de100000>')
 elif name=='nvram':print('boot-args\tnvfb=1 nvaccel=1')
 elif name=='chown':pass
@@ -43,6 +43,13 @@ else:sys.exit(99)
 '''
 
 class Install(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.guard_temp=tempfile.TemporaryDirectory()
+        cls.guard=Path(cls.guard_temp.name)/'runtime-check'
+        subprocess.run(['xcrun','clang','-O2','-Wall','-Wextra','-Werror','-target','x86_64-apple-macos15.0',str(REPO/'app/RuntimeCheck/main.c'),'-o',str(cls.guard)],check=True)
+    @classmethod
+    def tearDownClass(cls):cls.guard_temp.cleanup()
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='nullmoth-tahoe-install-');self.root=Path(self.temp.name)
         self.payload=self.root/'payload';self.payload.mkdir()
@@ -55,6 +62,15 @@ class Install(unittest.TestCase):
         for b in ['NVMTLDriver.bundle','NVIDIAShared.bundle','nvmtl']:
             p=self.payload/'Library/GPUBundles'/b;p.mkdir(parents=True);(p/'fixture').write_text('new-'+b)
         (self.payload/'Library/GPUBundles/nvmtl-allow.txt').write_text('new-allow')
+        load=struct.pack('<6I',0x32,24,1,0x000f0500,0x000f0500,0)
+        runtime=self.payload/'Library/GPUBundles/nvmtl/libvulkan_nouveau.dylib'
+        runtime.write_bytes(struct.pack('<8I',0xfeedfacf,0x01000007,3,6,1,len(load),0,0)+load)
+        for folder in [self.root,self.payload]:
+            (folder/'nullmoth-runtime-check').write_bytes(self.guard.read_bytes())
+            (folder/'nullmoth-runtime-check').chmod(0o755)
+            helper=folder/'nullmoth-runtime-check.sh'
+            helper.write_bytes((REPO/'app/Resources/nullmoth-runtime-check.sh').read_bytes());helper.chmod(0o755)
+
         fw=self.payload/'Users/Shared/nvfw';fw.mkdir(parents=True);(fw/'fixture').write_text('new-firmware')
         lines=[hashlib.sha256(p.read_bytes()).hexdigest()+'  '+str(p.relative_to(self.payload)) for p in self.payload.rglob('*') if p.is_file()]
         (self.payload/'SHA256SUMS').write_text('\n'.join(lines)+'\n')
@@ -86,6 +102,12 @@ class Install(unittest.TestCase):
         self.assertEqual(self.other.stat().st_mode&0o777,0o400)
     def assert_creates(self,count):
         self.assertEqual(int((self.root/'creates').read_text()),count)
+    def test_older_runtime_host_is_refused_before_collection_or_backup(self):
+        r=self.run_install(FAKE_OS_VERSION='15.4.9')
+        self.assertNotEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertIn('requires macOS 15.5.0',r.stdout+r.stderr)
+        self.assertFalse((self.root/'creates').exists())
+        for path,value in self.old.items():self.assertEqual(path.read_bytes(),value)
     def test_preflight_failure_does_not_modify_live_files(self):
         self.assert_restored(self.run_install(FAKE_PREFLIGHT_FAIL='1'));self.assert_creates(1)
     def test_live_build_failure_restores_all_previous_files(self):

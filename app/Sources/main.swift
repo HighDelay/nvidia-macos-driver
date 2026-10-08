@@ -6,12 +6,13 @@ import CryptoKit
 import IOKit
 import Metal
 import WebKit
+import UniformTypeIdentifiers
 
 struct Package {
-    static let version = "1.0.9"
-    static let name = "nullmoth-nvidia-1.0.9.tar.gz"
-    static let url = URL(string: "https://github.com/nullmoth/nvidia-macos-driver/releases/download/v1.0.13/nullmoth-nvidia-1.0.9.tar.gz")!
-    static let sha256 = "9dbfdb1b1359e2ef4166a46905ee195774b0b4ba20be083a8111ef550b1e5789"
+    static let version = "1.0.10"
+    static let name = "nullmoth-nvidia-1.0.10.tar.gz"
+    static let url = URL(string: "https://github.com/nullmoth/nvidia-macos-driver/releases/download/v1.0.15/nullmoth-nvidia-1.0.10.tar.gz")!
+    static let sha256 = "6400019b8d18b5cc93a78f6c1779fbe044ac8b99101ad252db7bffc7cc64b9e9"
 }
 let uploadPage = URL(string: "https://nullmothsystems.com/#send")!
 let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("NullMoth")
@@ -40,8 +41,7 @@ func prop(_ e: io_registry_entry_t, _ k: String) -> Any? {
     IORegistryEntryCreateCFProperty(e, k as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue()
 }
 func u32(_ e: io_registry_entry_t, _ k: String) -> UInt32? {
-    guard let d = prop(e, k) as? Data, d.count >= 4 else { return (prop(e, k) as? NSNumber)?.uint32Value }
-    return d.withUnsafeBytes { $0.load(as: UInt32.self) }
+    HardwareMap.integer(prop(e, k), maximum: UInt64(UInt32.max)).map { UInt32($0) }
 }
 func str(_ e: io_registry_entry_t, _ k: String) -> String? {
     if let s = prop(e, k) as? String { return s }
@@ -71,7 +71,14 @@ func pciDisplays() -> [[String: Any]] {
     services("IOPCIDevice").compactMap { s in
         defer { IOObjectRelease(s) }
         guard let cls = u32(s, "class-code"), cls >> 16 == 0x03, let v = u32(s, "vendor-id"), let d = u32(s, "device-id") else { return nil }
-        return ["vendor": String(format: "%04X", v & 0xffff), "device": String(format: "%04X", d & 0xffff), "model": str(s, "model") ?? ""]
+        var path = [CChar](repeating: 0, count: 512)
+        let located = IORegistryEntryGetPath(s, kIOServicePlane, &path) == KERN_SUCCESS
+        var identity = Profile.displayIdentity(vendor: v, device: d,
+                                               subsystemVendor: u32(s, "subsystem-vendor-id"),
+                                               subsystemDevice: u32(s, "subsystem-id"),
+                                               path: located ? String(cString: path) : "")
+        identity["model"] = str(s, "model") ?? ""
+        return identity
     }
 }
 
@@ -90,7 +97,7 @@ func usbControllers() -> [[String: Any]] {
                 let devs = children(p).filter { className($0).contains("USB") && className($0).contains("Device") || className($0) == "IOUSBHostDevice" }
                 let names = devs.map { str($0, "USB Product Name") ?? str($0, "kUSBProductString") ?? regName($0) }
                 ports.append(["name": regName(p), "port": Int(u32(p, "port") ?? 0), "usb3": cls.contains("30"),
-                              "connector": Int(u32(p, "UsbConnector") ?? 255), "devices": names,
+                              "connector": Int(u32(p, "UsbConnector") ?? 255), "connectorKnown": u32(p, "UsbConnector") != nil, "devices": names,
                               "comment": str(p, "#comment") ?? ""])
                 devs.forEach { IOObjectRelease($0) }
             }
@@ -212,10 +219,9 @@ func driverCrashes(sinceInstallOnly: Bool = true) -> [URL] {
 }
 
 func redact(_ s: String) -> String {
-    var t = s
     let user = NSUserName(), full = NSFullUserName()
+    let homes = [NSHomeDirectory(), URL(fileURLWithPath: "/Users").appendingPathComponent(user).path]
     var exact: [String: String] = [:]
-    exact[NSHomeDirectory()] = "[home]"; exact[URL(fileURLWithPath: "/Users").appendingPathComponent(user).path] = "[home]"
     for k in ["ComputerName", "LocalHostName", "HostName"] {
         let v = sh("/usr/sbin/scutil", ["--get", k]).trimmingCharacters(in: .whitespacesAndNewlines)
         if v.count > 2 { exact[v] = "this-mac" }
@@ -226,17 +232,7 @@ func redact(_ s: String) -> String {
     }
     if full.count > 2 { exact[full] = "user" }
     if user.count > 2 { exact[user] = "user" }
-    for (k, v) in exact.sorted(by: { $0.key.count > $1.key.count }) { t = t.replacingOccurrences(of: k, with: v) }
-    let rules: [(String, String)] = [
-        (#"[/]Users[/][^/\s"']+"#, "[home]"),
-        (#"\b[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\b"#, "[uuid]"),
-        (#"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b"#, "[mac]"),
-        (#"\b(?:\d{1,3}\.){3}\d{1,3}\b"#, "[ip]"),
-        (#""(crashReporterKey|deviceIdentifierForVendor|sessionID|userID|incident|bootSessionUUID|sleepWakeUUID|serial[A-Za-z]*)"\s*:\s*"[^"]*""#, "\"$1\":\"[removed]\""),
-        (#"(?i)(serial number|system serial|hardware uuid|provisioning udid)[^\n]*"#, "$1: [removed]"),
-    ]
-    for (p, r) in rules { t = t.replacingOccurrences(of: p, with: r, options: .regularExpression) }
-    return t
+    return redactSupportText(s, homes: homes, identities: exact)
 }
 
 func hardwareFacts() -> String {
@@ -366,7 +362,9 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         case "download": download()
         case "checkUpdate": checkUpdate()
         case "updateDriver": updateDriver(efi: b["efi"] as? String ?? "auto")
-        case "run": run(mode: b["mode"] as? String ?? "dry", pkg: b["pkg"] as? String ?? "", efi: b["efi"] as? String ?? "auto", extra: [])
+        case "run":
+            guard let mode = AppActions.directRunMode(b["mode"]) else { return }
+            run(mode: mode, pkg: b["pkg"] as? String ?? "", efi: b["efi"] as? String ?? "auto", extra: [])
         case "restart": NSAppleScript(source: "tell application \"System Events\" to restart")?.executeAndReturnError(nil)
         case "privacy": NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Security")!)
         case "logs": try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true); NSWorkspace.shared.open(logs)
@@ -376,10 +374,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         case "usbWrite": usbWrite(b["sel"] as? [String: [String: Int]] ?? [:], efi: b["efi"] as? String ?? "auto")
         case "crashReport": crashReportFromWindow()
         case "sendLogs": sendLogs()
-        case "osupdate":
-            if b["cancel"] as? Bool ?? false { run(mode: "update", pkg: "", efi: b["efi"] as? String ?? "auto", extra: ["--update", "cancel"]) }
-            else { run(mode: "tahoe", pkg: b["pkg"] as? String ?? "", efi: b["efi"] as? String ?? "auto", extra: ["--update", "prepare"]) }   // installs or updates the driver, then prepares
-        case "swupdate": NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Software-Update-Settings.extension")!)
+        case "optionalDiagnostics": optionalDiagnostics()
+        case "importDiagnosticReceipt": importDiagnosticReceipt()
         case "verbose": run(mode: "verbose", pkg: "", efi: b["efi"] as? String ?? "auto", extra: ["--verbose", (b["on"] as? Bool ?? false) ? "on" : "off"])
         default: break
         }
@@ -430,9 +426,18 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         p["cpu_vendor"] = vendor.contains("AMD") ? "amd" : vendor.contains("Intel") ? "intel" : vendor
         p["cpu"] = sysctl("machdep.cpu.brand_string")
         let bat = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
-        p["laptop"] = bat != 0; if bat != 0 { IOObjectRelease(bat) }
+        var installed: Bool? = nil
+        if bat != 0 {
+            if let value = prop(bat, "BatteryInstalled") as? NSNumber, CFGetTypeID(value) == CFBooleanGetTypeID() {
+                installed = value.boolValue
+            }
+            IOObjectRelease(bat)
+        }
+        Profile.attachChassisEvidence(servicePresent: bat != 0, batteryInstalled: installed, to: &p)
         p["egpu"] = Profile.nvidiaBehindThunderbolt()
         p["macos_major"] = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        p["gpu_candidates"] = gpus
+        p["gpu_rule_selection"] = gpus.filter { $0["vendor"] as? String == "10DE" }.count > 1 ? "first_registry_device_multiple_present" : "single_registry_device"
         var windowsProfiles: [[String: Any]] = []
         for v in ((try? FileManager.default.contentsOfDirectory(atPath: "/Volumes")) ?? []).sorted() {
             if let d = try? Data(contentsOf: URL(fileURLWithPath: "/Volumes/\(v)/NullMoth/system-profile.json")),
@@ -588,6 +593,31 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         run(mode: "usbmap", pkg: "", efi: efi, extra: ["--usbmap", dir.deletingLastPathComponent().deletingLastPathComponent().path])
     }
 
+    func optionalDiagnostics() {
+        guard let resources = Bundle.main.resourceURL else { return }
+        send("diagnosticsStatus", ["text": "Checking availability. No trace starts."])
+        DispatchQueue.global().async {
+            let receipt = OptionalDiagnostics.prerequisites(executable: resources.appendingPathComponent("nullmoth-diagnostics-preflight"), targetPID: getpid())
+            self.send("diagnosticsStatus", ["text": OptionalDiagnostics.guidance(receipt)])
+        }
+    }
+
+    func importDiagnosticReceipt() {
+        let panel = NSOpenPanel(); panel.title = "Choose a saved diagnostics receipt"
+        panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let data = try DiagnosticReceipts.privateFile(url)
+            _ = try DiagnosticReceipts.validatedSummary(data)
+            try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+            try DiagnosticReceipts.stage(data, directory: support.appendingPathComponent("Diagnostics", isDirectory: true))
+            send("diagnosticReceipt", ["text": "Saved receipt accepted. Only its validated count/configuration summary can be sent, after the separate Send logs confirmation. Nothing has been uploaded."])
+        } catch {
+            send("diagnosticReceipt", ["text": "Receipt refused. Choose an unchanged supported JSON receipt saved with this session's upload permission, owned by this account, with private file permissions (0600). Other logs remain available."])
+        }
+    }
+
     // "Send logs" (two clicks: the button, then Send). Collects 1401's own logs, the driver's state, a redacted crash
     // report when the driver crashed, and - after macOS asks for the password - OpenCore's boot logs and saved panics
     // from every OpenCore partition (sticks included). Every file is uploaded with its SHA-256, and the site refuses
@@ -595,18 +625,26 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
     func sendLogs() {
         let a = NSAlert()
         a.messageText = "Send logs to NullMoth"
-        a.informativeText = "1401 is sending this Mac's NullMoth logs to nullmothsystems.com so the problem can be found and fixed: what 1401 did, the driver's state, driver crash reports, recent WindowServer, Firefox and Blender crash reports, update diagnostics, and OpenCore's startup logs. Your name, your Mac's name, serial numbers and addresses are removed first. macOS asks for your password so 1401 can read the startup logs."
+        a.informativeText = "1401 is sending this Mac's NullMoth logs to nullmothsystems.com so the problem can be found and fixed: what 1401 did, the driver's state, driver crash reports, recent WindowServer, Firefox and Blender crash reports, update diagnostics, OpenCore's startup logs, and a numeric device/CPU relationship map. A separately imported diagnostics receipt is included only if that session allowed upload, and only as a validated count/configuration summary. The map records kernel-visible hardware, not verified driver support. Your name, your Mac's name, serial numbers and addresses are removed first. macOS asks for your password so 1401 can read the startup logs."
         a.addButton(withTitle: "Send"); a.addButton(withTitle: "Cancel")
         guard a.runModal() == .alertFirstButtonReturn else { send("logsDone", ["ok": false, "why": "Not sent."]); return }
         DispatchQueue.global().async {
             let fm = FileManager.default
-            let dir = fm.temporaryDirectory.appendingPathComponent("1401-logs-\(Int(Date().timeIntervalSince1970))")
-            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            let dir = fm.temporaryDirectory.appendingPathComponent("1401-logs-" + UUID().uuidString)
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             let script = Bundle.main.resourceURL!.appendingPathComponent("nullmoth-setup.sh").path
             let q = { (x: String) in "'" + x.replacingOccurrences(of: "'", with: "'\\''") + "'" }
             let cmd = "/bin/bash \(q(script)) --collect-logs \(q(dir.path)) > \(q(dir.appendingPathComponent("collect.txt").path)) 2>&1"
             var err: NSDictionary?
             NSAppleScript(source: "do shell script \"\(cmd.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\" with administrator privileges")?.executeAndReturnError(&err)
+            if let executable = Bundle.main.executableURL {
+                let map = HardwareMapWorker.run(executable: executable)
+                let target = dir.appendingPathComponent("hardware-map.json")
+                if let data = try? JSONSerialization.data(withJSONObject: map, options: [.prettyPrinted, .sortedKeys]) {
+                    try? data.write(to: target, options: .atomic)
+                    try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+                }
+            }
             var files = ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
             let mine = ((try? fm.contentsOfDirectory(at: logs, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
                 .sorted { ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) >
@@ -622,15 +660,29 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
                 if writeReport(Array(crashes.prefix(3)), to: cr) { files.append(cr) }
             }
             var ids: [String] = [], errs: [String] = []
+            let savedReceipt = support.appendingPathComponent("Diagnostics/diagnostic-receipt.json")
+            if fm.fileExists(atPath: savedReceipt.path) {
+                do {
+                    let data = try DiagnosticReceipts.privateFile(savedReceipt)
+                    let summary = try DiagnosticReceipts.sanitized(data, sendLogsConsent: true)
+                    let target = dir.appendingPathComponent("diagnostic-session.json")
+                    try summary.write(to: target, options: .atomic)
+                    try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+                    files.append(target)
+                } catch { errs.append("The optional diagnostics receipt was refused; ordinary logs are retained.") }
+            }
             if err != nil { errs.append("Some system logs could not be collected. See collect.txt for details.") }
             // Directory enumeration is unordered: a stick with many boot logs could crowd out
             // the GPU state, kernel log, or crash report. Always send those first.
-            let important = ["driver-state.txt", "driver-kernel-log.txt", "driver-plugin-log.txt", "crash-report.txt", "collect.txt", "driver-update-log.txt"]
+            let important = ["hardware-map.json", "driver-state.txt", "driver-kernel-log.txt", "driver-plugin-log.txt", "crash-report.txt", "diagnostic-session.json", "collect.txt", "driver-update-log.txt"]
             files.sort {
                 let a = supportCrashRank($0.lastPathComponent) ?? (important.firstIndex(of: $0.lastPathComponent) ?? important.count)
                 let b = supportCrashRank($1.lastPathComponent) ?? (important.firstIndex(of: $1.lastPathComponent) ?? important.count)
                 return a == b ? $0.lastPathComponent < $1.lastPathComponent : a < b
             }
+            // One random value per send, shared by every file of it, so the site can group one run's logs. It names the
+            // run, not the Mac: a new one each time.
+            let batch = newUploadBatch()
             for f in files.prefix(12) {
                 guard var data = try? Data(contentsOf: f), !data.isEmpty else { continue }
                 data.removeAll { $0 == 0 }   // the site refuses a text log with NUL bytes (OpenCore pads its log file)
@@ -642,7 +694,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
                 req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
                 let name = f.lastPathComponent.hasSuffix(".txt") || f.lastPathComponent.hasSuffix(".log") ? f.lastPathComponent : f.lastPathComponent + ".txt"
                 req.setValue(name.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "log.txt", forHTTPHeaderField: "X-File-Name")
-                let meta = try! JSONSerialization.data(withJSONObject: ["consent": true, "notes": "1401 Mac \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") (driver \(Package.version)) logs (sent from the app)", "batch": "1401-mac"])
+                let meta = try! JSONSerialization.data(withJSONObject: ["consent": true, "notes": "1401 Mac \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") (driver \(Package.version)) logs (sent from the app)", "batch": batch])
                 req.setValue(meta.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: ""), forHTTPHeaderField: "X-Meta")
                 req.setValue(sha, forHTTPHeaderField: "X-Content-SHA256")
                 let done = DispatchSemaphore(value: 0)
@@ -672,7 +724,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
     }
 
     func run(mode: String, pkg: String, efi: String, extra: [String], expectedSha: String? = nil) {
-        guard !runningSetup, pendingDownload == nil else { return }
+        guard ["dry", "install", "remove", "usbmap", "verbose"].contains(mode),
+              !runningSetup, pendingDownload == nil else { return }
         runningSetup = true
         try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
@@ -682,7 +735,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         var args: [String]
         switch mode {
         case "remove": args = ["--remove"]
-        case "usbmap", "verbose", "update": args = extra
+        case "usbmap", "verbose": args = extra
         default:
             args = ["--pkg", pkg, "--sha", expectedSha ?? Package.sha256, "--tool", res.appendingPathComponent("NullMothSafe.efi").path,
                     "--app", Bundle.main.executablePath ?? ""]
@@ -737,6 +790,14 @@ let argv = CommandLine.arguments
 func table() -> [String: Any] {
     guard let d = try? Data(contentsOf: Bundle.main.resourceURL!.appendingPathComponent("nvidia_gsp_ids.json")) else { return [:] }
     return (try? JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:]
+}
+if argv == [argv[0], "--hardware-map"] {
+    var map = HardwareMap.collect()
+    var bytesWritten = 0
+    guard HardwareMapWorker.emitCheckpoint(map, phase: "baseline", bytesWritten: &bytesWritten) else { exit(75) }
+    map["peripheral_facts"] = NativePeripheralFacts.collect()
+    guard HardwareMapWorker.emitCheckpoint(map, phase: "final", bytesWritten: &bytesWritten) else { exit(75) }
+    exit(0)
 }
 if argv.contains("--scan") { print(json(App.scanMac(table()))); exit(0) }
 if argv.contains("--usb") { print(json(usbControllers())); exit(0) }

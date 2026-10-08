@@ -277,14 +277,21 @@ ok "package matches its SHA-256"
 INSTALLER="$(cd "$(dirname "$0")" && pwd)/nullmoth-install.sh"
 [ -x "$INSTALLER" ] || stop "the audited installer is missing from the app"
 [ -n "$TOOL" ] && [ -f "$TOOL" ] || stop "the boot-picker tool is missing from the app"
+# This must precede EFI discovery/copy, SIP edits and driver staging.
+T=$(mktemp -d /var/tmp/nullmoth.XXXX) || stop "could not create runtime preflight directory"
+tar -xzf "$PKG" -C "$T" || stop "could not unpack the package for runtime compatibility checking"
+RUNTIME_PREFLIGHT="$(dirname "$INSTALLER")/nullmoth-runtime-check.sh"
+[ -x "$RUNTIME_PREFLIGHT" ] || stop "the runtime compatibility checker is missing from the app"
+/bin/bash "$RUNTIME_PREFLIGHT" "$T/pkgroot" "$(sw_vers -productVersion)" || stop "the userland runtime cannot load on this macOS version; EFI and driver files were not changed"
+rm -rf "$T"; T=""
 fi
 
 if [ -n "$CFG" ]; then C=$CFG; [ -f "$C" ] || stop "no config at $C"; MP=$(cd "$(dirname "$C")/../.." && pwd); OCREL="EFI/$(basename "$(dirname "$C")")"; ok "OpenCore config: $C (given)"
 else
   step "Finding the OpenCore partition"
   if [ "$EFI" = auto ]; then
-    found=""
-    if d=$(booted_part); then mount_efi "$d" && mp=$MOUNT_POINT && [ -n "$(ocrel_in "$mp")" ] && { found=$d; ok "OpenCore started this Mac from $d"; }; fi
+    found=""; BOOT_BOUND=0
+    if d=$(booted_part); then mount_efi "$d" && mp=$MOUNT_POINT && [ -n "$(ocrel_in "$mp")" ] && { found=$d; BOOT_BOUND=1; ok "OpenCore started this Mac from $d"; }; fi
     if [ -z "$found" ]; then
       # OpenCore can live on an EFI partition or on any FAT32 partition (a 1401 stick is a FAT32 data partition)
       for d in $(diskutil list | awk '/ EFI | DOS_FAT_32 | Windows_FAT_32 | Microsoft Basic Data /{print $NF}' | grep -E '^disk[0-9]+s[0-9]+$'); do
@@ -306,8 +313,12 @@ else
         stop "this Mac starts with Clover, not OpenCore - the NVIDIA driver's settings are made for OpenCore. Make an OpenCore setup (1401 on Windows builds one), start from it, then run this again"
       stop "no OpenCore config for this Mac ($(sysctl -n hw.model)) on any connected disk - plug in the disk or USB stick OpenCore started from, then try again (the NOTE lines above show what each partition holds)"
     fi
-    if [ "$n" -gt 1 ]; then be=$(boot_esp); for d in $found; do [ "$d" = "$be" ] && { found=$d; n=1; ok "using the OpenCore on this Mac's own drive ($d)"; }; done; fi
-    [ "$n" -gt 1 ] && { for d in $found; do echo "NOTE candidate $d"; done; stop "several OpenCore partitions found - pick one"; }
+    # A shared SMBIOS model or the macOS disk does not identify the booted EFI.
+    # Retain candidate discovery, but require explicit selection without boot-path proof.
+    if [ "$BOOT_BOUND" != 1 ]; then
+      for d in $found; do echo "NOTE candidate $d"; done
+      stop "OpenCore's startup partition could not be confirmed - select the partition this Mac started from"
+    fi
     EFI=${found# }
   fi
   mount_efi "$EFI" || stop "could not mount $EFI"; MP=$MOUNT_POINT

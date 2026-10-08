@@ -26,3 +26,18 @@ var noProfile = original
 Profile.attachWindowsDiagnostics([], to: &noProfile)
 assert(noProfile["windows_candidates"] == nil)
 print("Unbound mounted profiles cannot select chipset rules; live rules and all diagnostics preserved.")
+
+let registryA = Profile.displayIdentity(vendor: 0x10DE, device: 0x2D04,
+                                       subsystemVendor: 0x1462, subsystemDevice: 0x5102,
+                                       path: "IOService:/PCI0/GPUA")
+let registryB = Profile.displayIdentity(vendor: 0x10DE, device: 0x2D04,
+                                       subsystemVendor: 0x1462, subsystemDevice: 0x5102,
+                                       path: "IOService:/PCI0/GPUB")
+assert(registryA["device"] as? String == registryB["device"] as? String)
+assert(registryA["registry_path"] as? String != registryB["registry_path"] as? String)
+assert(registryA["subsystem_vendor"] as? String == "1462")
+assert(registryA["identity_source"] as? String == "live_registry")
+let partialRegistry = Profile.displayIdentity(vendor: 0x10DE, device: 0x2D04,
+                                             subsystemVendor: nil, subsystemDevice: nil, path: "")
+assert(partialRegistry["subsystem_vendor"] == nil && partialRegistry["registry_path"] == nil)
+print("Live registry subsystem/route evidence retained without inventing absent properties.")

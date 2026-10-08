@@ -4,6 +4,37 @@ import IOKit
 /// Live GPU, CPU, platform and macOS properties select per-system rules.
 /// Unbound mounted board/chipset profiles are retained only as diagnostic evidence.
 enum Profile {
+    /// Registry properties may have been injected by EFI; preserve their origin.
+    /// They describe the current PCI service and do not bind an attached scan.
+    static func displayIdentity(vendor: UInt32, device: UInt32,
+                                subsystemVendor: UInt32?, subsystemDevice: UInt32?,
+                                path: String) -> [String: Any] {
+        var value: [String: Any] = ["vendor": String(format: "%04X", vendor & 0xffff),
+                                    "device": String(format: "%04X", device & 0xffff),
+                                    "identity_source": "live_registry"]
+        if let v = subsystemVendor { value["subsystem_vendor"] = String(format: "%04X", v & 0xffff) }
+        if let d = subsystemDevice { value["subsystem_device"] = String(format: "%04X", d & 0xffff) }
+        if !path.isEmpty { value["registry_path"] = path }
+        return value
+    }
+
+    /// A missing or unconfigured battery service is not evidence of a desktop chassis.
+    static func attachChassisEvidence(servicePresent: Bool, batteryInstalled: Bool?, to p: inout [String: Any]) {
+        p["battery_service_present"] = servicePresent
+        p["battery_service_source"] = "AppleSmartBattery registry service"
+        p["chassis_identity_origin"] = "kernel-visible service; firmware or driver properties may be injected"
+        p.removeValue(forKey: "laptop")
+        if servicePresent && batteryInstalled == true {
+            p["laptop"] = true
+            p["chassis"] = "laptop"
+            p["chassis_status"] = "battery service reports installed battery"
+        } else {
+            p["chassis"] = "unknown"
+            p["chassis_status"] = "no validated battery or physical firmware platform-role evidence"
+        }
+        if let batteryInstalled { p["battery_installed_reported"] = batteryInstalled }
+    }
+
     /// NVIDIA's device-ID ranges per generation (GSP-capable cards only: Turing and later).
     static func arch(_ dev: String) -> String {
         guard let v = Int(dev, radix: 16) else { return "unknown" }

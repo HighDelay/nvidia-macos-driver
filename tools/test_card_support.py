@@ -72,7 +72,7 @@ int main(void){
 UPLOAD = r'''
 import Foundation
 var files=(0..<50).map { URL(fileURLWithPath: "old-\($0).txt") }
-files += ["crash-report.txt","driver-state.txt","driver-plugin-log.txt","collect.txt","driver-kernel-log.txt","driver-update-log.txt"].map {URL(fileURLWithPath:$0)}
+files += ["hardware-map.json","crash-report.txt","driver-state.txt","driver-plugin-log.txt","collect.txt","driver-kernel-log.txt","driver-update-log.txt"].map {URL(fileURLWithPath:$0)}
 files += (0..<3).map { URL(fileURLWithPath: "macos-WindowServer-\($0).ips.txt") }
             PRODUCTION
 let sent=Set(files.prefix(12).map { $0.lastPathComponent })
@@ -145,7 +145,10 @@ with tempfile.TemporaryDirectory(prefix="nullmoth-card-tests-") as directory:
     run("xcrun", "clang", "-fobjc-arc", str(tmp / "mutant.m"), "-framework", "Foundation", "-o", str(tmp / "mutant"))
     assert subprocess.run([str(tmp / "mutant"), "WindowServer"]).returncode == 42
     print("PASS original submission race rejected by the display test")
+    helpers = snippet("app/Sources/main.swift", "let supportCrashProcesses =", "func userApplicationCrashes()")
+    redaction = (ROOT / "app/Sources/redaction.swift").read_text()
+    helpers += "func newUploadBatch()" + redaction.split("func newUploadBatch()", 1)[1]
     priority = snippet("app/Sources/main.swift", "let important = [", "for f in files.prefix(12)")
-    (tmp / "upload.swift").write_text(UPLOAD.replace("PRODUCTION", priority))
+    (tmp / "upload.swift").write_text(UPLOAD.replace("PRODUCTION", helpers + priority))
     print(run("xcrun", "swift", str(tmp / "upload.swift")))
 print("PASS all card-support CPU regressions")
