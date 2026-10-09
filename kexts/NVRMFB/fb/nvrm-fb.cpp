@@ -161,7 +161,13 @@ class NVRMNVDAFramebuffer : public IOFramebuffer {
         if (event->type == NVKMS_EVENT_TYPE_FLIP_OCCURRED && event->u.flipOccurred.head < 8
             && event->u.flipOccurred.layer == NVKMS_KAPI_LAYER_PRIMARY_IDX)
             OSIncrementAtomic(&sFlipLatched[event->u.flipOccurred.head]);
+        // A display connected (or a connector changed) after boot: look for it off this context, after a short
+        // settle (EDID reads follow the hot-plug interrupt).
+        if (event->type == NVKMS_EVENT_TYPE_DPY_CHANGED || event->type == NVKMS_EVENT_TYPE_DYNAMIC_DPY_CONNECTED)
+            hotplugKick();
     }
+    static void hotplugKick();
+    static void hotplugFire(thread_call_param_t p0, thread_call_param_t);
     bool kapiInit();
     bool applyMode();
     void hudDraw();
@@ -750,6 +756,65 @@ bool NVRMNVDAFramebuffer::kapiInit()
 }
 
 static NVRMNVDAFramebuffer *gFB = nullptr;
+// Displays connected after boot. At boot every display NVKMS reports connected gets an index; the nubs past that count
+// had nothing to drive and their framebuffers did not start, so a monitor switched on or plugged in later stayed dark
+// until a restart (the event arrived and was only logged). Apple's drivers bring such a display up as a new
+// framebuffer; this does the same: the display is added to the table and the idle nubs are matched again, so the next
+// framebuffer starts exactly as it would have at boot with the monitor already on.
+static thread_call_t gHotplug = nullptr;
+void NVRMNVDAFramebuffer::hotplugKick()
+{
+    if (!gHotplug) return;
+    uint64_t d; clock_interval_to_deadline(1500, kMillisecondScale, &d);
+    thread_call_enter_delayed(gHotplug, d);
+}
+void NVRMNVDAFramebuffer::hotplugFire(thread_call_param_t, thread_call_param_t)
+{
+    NVRMNVDAFramebuffer *me = gFB;
+    if (!me || !me->fKms || !me->fDev || gNDpy < 0) return;
+    NvU32 n = 0; NvKmsKapiDisplay handles[NVKMS_KAPI_MAX_CONNECTORS * 2];
+    if (!me->fKms->getDisplays(me->fDev, &n, NULL) || n == 0) return;
+    if (n > sizeof handles / sizeof handles[0]) n = sizeof handles / sizeof handles[0];
+    if (!me->fKms->getDisplays(me->fDev, &n, handles)) return;
+    struct NvKmsKapiDynamicDisplayParams *dd = (struct NvKmsKapiDynamicDisplayParams *)IOMalloc(sizeof *dd);
+    if (!dd) return;
+    int added = 0;
+    IORecursiveLock *sl = startLock();
+    if (sl) IORecursiveLockLock(sl);
+    for (NvU32 i = 0; i < n; i++) {
+        bool known = false;
+        for (int k = 0; k < gNDpy; k++) if (gDpy[k].handle == handles[i]) { known = true; break; }
+        if (known) continue;
+        nvu_zero(dd, sizeof *dd); dd->handle = handles[i];
+        if (!me->fKms->getDynamicDisplayInfo(me->fDev, dd) || !dd->connected) continue;
+        struct NvKmsKapiStaticDisplayInfo si = {};
+        if (!me->fKms->getStaticDisplayInfo(me->fDev, handles[i], &si)) continue;
+        if (gNDpy >= (int)(sizeof gDpy / sizeof gDpy[0])) break;
+        struct nvrm_dpy_rec *r = &gDpy[gNDpy];
+        r->handle = handles[i]; r->connector = si.connectorHandle; r->headMask = si.headMask;
+        r->edidSize = dd->edid.bufferSize > sizeof r->edid ? (NvU32)sizeof r->edid : dd->edid.bufferSize;
+        nvu_copy(r->edid, dd->edid.buffer, r->edidSize);
+        FBLOG("hot-plug: display 0x%x connector 0x%x headMask 0x%x connected after boot -> index %d",
+              handles[i], (unsigned)si.connectorHandle, (unsigned)si.headMask, gNDpy);
+        gNDpy++; added++;
+    }
+    if (sl) IORecursiveLockUnlock(sl);
+    IOFree(dd, sizeof *dd);
+    if (!added) return;
+    IOService *nub0 = me->getProvider(), *gpu = nub0 ? nub0->getProvider() : nullptr;
+    OSIterator *it = gpu ? gpu->getChildIterator(gIOServicePlane) : nullptr;
+    unsigned matched = 0;
+    if (it) {
+        while (IOService *nub = OSDynamicCast(IOService, it->getNextObject())) {
+            OSNumber *ix = OSDynamicCast(OSNumber, nub->getProperty("fb-index"));
+            if (!ix || nub->getClient() || ix->unsigned32BitValue() >= (unsigned)gNDpy) continue;
+            nub->registerService(kIOServiceAsynchronous);   // matches NVRMFB again: the framebuffer starts on this index
+            matched++;
+        }
+        it->release();
+    }
+    FBLOG("hot-plug: %d display(s) added, %u idle nub(s) matched again", added, matched);
+}
 static char gTrace[32768]; static volatile SInt32 gTraceLen = 0, gTraceN = 0, gTraceFull = 0;
 void NVRMNVDAFramebuffer::trace(const char *s)
 {
@@ -1303,6 +1368,7 @@ bool NVRMNVDAFramebuffer::start(IOService *provider)
           (unsigned long long)(fBarLen >> 20), (unsigned long long)fBar1Base,
           (unsigned long long)((fBarLen >= (4ull << 30) ? fBarLen / 2 : NVRM_VRAM_BAR1_BUDGET) >> 20));
     if (fIndex == 0 && gFB != this) { retain(); gFB = this; }
+    if (fIndex == 0 && !gHotplug) gHotplug = thread_call_allocate(hotplugFire, nullptr);
     fPhysForVa = (nvrm_phys_for_va_t)(uintptr_t)propU64(provider, "phys-for-va");
     if (!fKms || !fPhysForVa || !fKms->getFlipPendingStatus || !fKms->dupMemory) { FBLOG("nub lacks nvkms-kapi/phys-for-va properties"); return false; }
     setProperty("IOFBDependentID", (unsigned long long)0x4E56524D00000001ull, 64);
