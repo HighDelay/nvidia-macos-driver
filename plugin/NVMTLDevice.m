@@ -285,7 +285,7 @@ static bool nvmtl_process_is_allowed(void)
     if (!strcmp(me, "mtlprobe") || !strcmp(me, "nvmtltest") || !strcmp(me, "nvmtlrender")) return true;
     FILE *f = fopen("/Library/GPUBundles/nvmtl-allow.txt", "r");
     if (!f) f = fopen("/Library/Extensions/nvmtl-allow.txt", "r");
-    if (!f) { nvlog("  no allow-list readable from this process: no device for %s", me); return false; }
+    if (!f) { nvlog("  no allow-list readable from this process: no device for %s (cannot read nvmtl-allow.txt)", me); return false; }
     char line[256]; bool ok = false;
     while (fgets(line, sizeof line, f)) {
         char *nl = strpbrk(line, "\r\n"); if (nl) *nl = 0;

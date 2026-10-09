@@ -173,6 +173,11 @@ cp "$HERE/Library/GPUBundles/nvmtl-allow.txt" "$GB/" || die "copy bundle allow l
 ditto "$HERE/Users/Shared/nvfw" "$FW" || die "copy firmware"
 for k in $KEXTS; do chown -R root:wheel "$EXT/$k.kext" && chmod -R 755 "$EXT/$k.kext" || die "permissions for $k"; done
 chown -R root:wheel "$GB/NVMTLDriver.bundle" "$GB/NVIDIAShared.bundle" "$GB/nvmtl" "$GB/nvmtl-allow.txt" && chmod -R a+rX "$FW" || die "bundle or firmware permissions"
+# WindowServer runs as _windowserver and must read the bundles and the allow list. WAS: cp under the app's privileged
+# helper (umask 077) left nvmtl-allow.txt at 0600, WindowServer got no Metal device, and CoreDisplay aborted
+# ("Failed to create MetalDevice") on every start: the crash loop after install on many machines.
+chmod -R go-w,a+rX "$GB/NVMTLDriver.bundle" "$GB/NVIDIAShared.bundle" "$GB/nvmtl" && chmod 644 "$GB/nvmtl-allow.txt" || die "bundle permissions"
+sudo -u _windowserver /bin/test -r "$GB/nvmtl-allow.txt" || die "WindowServer cannot read $GB/nvmtl-allow.txt (restore from $BK)"
 NEWKC="$KC.nullmoth-install-new"; rm -f "$NEWKC"
 kmutil create -n aux --volume-root / ${KARG[@]+"${KARG[@]}"} -B $KB -S $KS --repository "$EXT" -A "$NEWKC" -z >"$T/kmutil2.log" 2>&1 || die "live kernel collection build failed (restore from $BK)"
 [ -s "$NEWKC" ] || die "live kernel collection build produced no output (restore from $BK)"

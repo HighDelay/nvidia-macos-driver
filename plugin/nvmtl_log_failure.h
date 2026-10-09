@@ -22,6 +22,9 @@ static inline int nvmtl_log_failure(const char *text)
                     nvmtl_log_fault_word(text, "fault") ||
                     nvmtl_log_fault_word(text, "FAULT") || strstr(text, "-> -") ||
                     strstr(text, "missing") || strstr(text, "cannot") ||
-                    strstr(text, "unsupported") || strstr(text, "refused"));
+                    strstr(text, "unsupported") || strstr(text, "refused") ||
+                    /* a process denied a device: for WindowServer that is the "Failed to create MetalDevice" abort,
+                     * and /tmp/nvmtl.log is gone after the reboot that rescues the machine */
+                    strstr(text, "no device"));
 }
 #endif
