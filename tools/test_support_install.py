@@ -21,7 +21,7 @@ with (r/'calls.jsonl').open('a') as f:f.write(json.dumps([name]+a)+'\n')
 if name=='id':print('0')
 elif name=='uname':print('x86_64')
 elif name=='sw_vers':print('25G241' if a==['-buildVersion'] else os.environ.get('FAKE_OS_VERSION','15.8.1'))
-elif name=='ioreg':print('"vendor-id" = <de100000>')
+elif name=='ioreg':print('+-o GFX0@0  <class IOPCIDevice>\n    {\n      "device-id" = <'+os.environ.get('FAKE_NV_DEVICE','052d0000')+'>\n      "vendor-id" = <de100000>\n    }')
 elif name=='nvram':print('boot-args\tnvfb=1 nvaccel=1')
 elif name=='stat':
  p=Path(a[-1]);info=p.lstat()
@@ -113,11 +113,20 @@ class Install(unittest.TestCase):
     def assert_creates(self,count):
         self.assertEqual(int((self.root/'creates').read_text()),count)
     def test_unqualified_os_is_refused_before_collection_or_backup(self):
-        r=self.run_install(FAKE_OS_VERSION='26.7.1')
+        r=self.run_install(FAKE_OS_VERSION='27.0')
         self.assertNotEqual(r.returncode,0)
-        self.assertIn('qualified for macOS 15 only',r.stdout+r.stderr)
+        self.assertIn('built for macOS 15 and 26',r.stdout+r.stderr)
         self.assertFalse((self.root/'creates').exists())
         self.assertFalse(list((self.root/'Library/NullMoth').glob('backup-*')))
+        for path,expected in self.old.items():self.assertEqual(path.read_bytes(),expected)
+
+    def test_pre_turing_card_is_refused_before_any_change(self):
+        # GTX 1060 (10DE:1C03): no GSP firmware, so the driver cannot run it; installing would switch off the
+        # firmware screen it is running on
+        r=self.run_install(FAKE_NV_DEVICE='031c0000')
+        self.assertNotEqual(r.returncode,0)
+        self.assertIn('older than the driver supports',r.stdout+r.stderr)
+        self.assertFalse((self.root/'creates').exists())
         for path,expected in self.old.items():self.assertEqual(path.read_bytes(),expected)
 
     def test_older_runtime_host_is_refused_before_collection_or_backup(self):

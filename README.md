@@ -69,8 +69,6 @@ maps your USB ports and, if the driver ever crashes the Mac, offers to make a cr
 state, driver crash reports, recent WindowServer crash reports and OpenCore's startup logs (names, serial numbers and addresses removed), each
 with a SHA-256 the site checks, and shows a report ID to quote in the NullMoth Discord.
 
-**macOS 26 Tahoe:** the package carries a separate NVAccel build, but full hardware and application qualification remains pending. The obsolete preparation action has been removed from the app; do not treat package contents as a verified upgrade path.
-
 **Keep the USB stick or disk OpenCore started your Mac from plugged in** while the app runs: that is the config it
 changes. A shared SMBIOS model alone does not establish the startup partition. Automatic USB-to-internal copying is disabled, preserving Windows and vendor boot files. Driver installation uses the selected startup partition. Keep the OpenCore stick attached for every restart until the internal boot setup is reviewed. After the install,
 restart; the first start with the driver pauses for up to a minute at "PCI configuration end" while the GPU comes up.
