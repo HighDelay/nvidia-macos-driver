@@ -9,10 +9,10 @@ import WebKit
 import UniformTypeIdentifiers
 
 struct Package {
-    static let version = "1.2.0"
-    static let name = "nullmoth-nvidia-1.2.0.tar.gz"
-    static let url = URL(string: "https://github.com/nullmoth/nvidia-macos-driver/releases/download/v1.2.0/nullmoth-nvidia-1.2.0.tar.gz")!
-    static let sha256 = "4ffb64cbaae05745b289bce328ee77c13203672536132839b5bade3024cf8b1c"
+    static let version = "1.3.0"
+    static let name = "nullmoth-nvidia-1.3.0.tar.gz"
+    static let url = URL(string: "https://github.com/nullmoth/nvidia-macos-driver/releases/download/v1.3.0/nullmoth-nvidia-1.3.0.tar.gz")!
+    static let sha256 = "111a8789ef8e01728eb23e24d140b88567e20c1d4e72e500c53925ebf94e4070"
 }
 let uploadPage = URL(string: "https://nullmothsystems.com/#send")!
 let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("NullMoth")
@@ -660,26 +660,22 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
             let script = Bundle.main.resourceURL!.appendingPathComponent("nullmoth-log-capture.sh").path
             let q = { (x: String) in "'" + x.replacingOccurrences(of: "'", with: "'\\''") + "'" }
             let cmd = "/bin/bash \(q(script))"
-            var err: NSDictionary?
             var collectionErrors: [String] = []
-            // NSAppleScript is not thread-safe and its administrator password panel needs the main run loop. Run from this
-            // background queue it could hang or show a panel no one saw, and the window stayed on "Collecting and
-            // sending..." for an hour (user reports 10-08). The script runs on the main thread; the rest stays here.
-            var output: String? = nil, started = false
-            DispatchQueue.main.sync {
-                self.send("logsStatus", ["text": "Waiting for your Mac password (a macOS window asks for it)..."])
+            DispatchQueue.main.async {
+                self.send("logsStatus", ["text": "Waiting for your Mac password (a macOS window asks for it). Collecting takes a few minutes; 1401 keeps working."])
                 NSApp.activate(ignoringOtherApps: true)
-                if let appleScript = NSAppleScript(source: "do shell script \"\(cmd.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\" with administrator privileges") {
-                    started = true
-                    output = appleScript.executeAndReturnError(&err).stringValue
-                }
-                self.send("logsStatus", ["text": "Collecting and sending..."])
             }
-            if started {
-                do { collectionErrors += try SavedReports.importCollection(output ?? "", to: dir) }
-                catch { collectionErrors.append("System log collection was incomplete: \(error.localizedDescription)") }
-            } else { collectionErrors.append("System log collection could not be started.") }
-            if let error = err { collectionErrors.append(redact(error.description)) }
+            // off the main thread: the app stays responsive while the logs are collected (Privileged.swift)
+            let run = Privileged.run(cmd, timeout: 15 * 60)
+            if run.cancelled {
+                DispatchQueue.main.async { self.send("logsDone", ["ok": false, "why": "Not sent: the password prompt was cancelled."]) }
+                return
+            }
+            DispatchQueue.main.async { self.send("logsStatus", ["text": "Sending..."]) }
+            do { collectionErrors += try SavedReports.importCollection(run.output, to: dir) }
+            catch { collectionErrors.append("System log collection was incomplete: \(error.localizedDescription)") }
+            let err = run.error
+            if let error = err { collectionErrors.append(redact(error)) }
             if !collectionErrors.isEmpty {
                 do { _ = try SavedReports.create(Data(collectionErrors.joined(separator: "\n").utf8), in: dir, name: "collection-errors.txt") }
                 catch { collectionErrors.append("The collector error summary could not be saved.") }
@@ -842,16 +838,18 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         if efi != "auto", !efi.isEmpty { args += ["--efi", efi] }
         let q = { (s: String) in "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
         let cmd = "/bin/bash \(q(res.appendingPathComponent("nullmoth-operation-capture.sh").path)) \(args.map(q).joined(separator: " "))"
-        let asrc = "do shell script \"\(cmd.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\" with administrator privileges"
         send("run", ["state": "start", "mode": mode, "log": log.path])
+        NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.global().async {
-            var err: NSDictionary?
             var captureFailed = false
-            if let script = NSAppleScript(source: asrc) {
-                let result = script.executeAndReturnError(&err)
+            // osascript in its own process (Privileged.swift): WAS NSAppleScript on this background queue, where its
+            // password panel could hang unseen and the window sat on "Finding the OpenCore partition"
+            let run = Privileged.run(cmd, timeout: 30 * 60)
+            let err = run.error
+            if !run.cancelled {
                 do {
                     let directory = log.deletingLastPathComponent()
-                    let warnings = try SavedReports.importCollection(result.stringValue ?? "", to: directory)
+                    let warnings = try SavedReports.importCollection(run.output, to: directory)
                     for name in ["setup-output.txt", "setup-output-head.txt", "setup-output-tail.txt"] {
                         let file = directory.appendingPathComponent(name)
                         if FileManager.default.fileExists(atPath: file.path) {
@@ -869,12 +867,11 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
                 }
             } else {
                 captureFailed = true
-                self.send("lines", ["Could not start the setup command."])
             }
             _ = self.flush(log, from: 0)
-            let cancelled = (err?[NSAppleScript.errorNumber] as? Int) == -128
+            let cancelled = run.cancelled
             if let error = err {
-                let message = redact(error.description)
+                let message = redact(error)
                 do { _ = try SavedReports.create(Data(message.utf8), in: log.deletingLastPathComponent(), name: "setup-launch-error.txt") }
                 catch { DispatchQueue.main.async { self.send("lines", ["Could not save the setup error: \(error.localizedDescription)"]) } }
             }

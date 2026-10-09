@@ -6,7 +6,8 @@ use alloc::vec::Vec;
 use core::time::Duration;
 use uefi::prelude::*;
 use uefi::runtime::{self, VariableAttributes, VariableVendor};
-use uefi::{cstr16, guid, println};
+use uefi::proto::console::text::Key;
+use uefi::{cstr16, guid, print, println, Char16};
 
 const APPLE_BOOT: VariableVendor = VariableVendor(guid!("7c436110-ab2a-4bbb-a880-fe41995c9f82"));
 const SAFE: &[u8] = b"-nvoff";
@@ -22,9 +23,35 @@ fn fail(msg: &str, st: Status) -> Status {
     Status::ABORTED
 }
 
+// Waits up to 60 s for one key. Only Y goes ahead: this entry sits in the boot picker next to macOS, and one stray
+// Enter used to remove the driver with no question asked.
+fn confirmed() -> bool {
+    println!("");
+    println!("  NullMoth: remove the NVIDIA driver?");
+    println!("  Press Y to remove it at the next macOS start. Any other key, or waiting 60 seconds, changes nothing.");
+    print!("  > ");
+    let yes = [Char16::try_from('y').unwrap(), Char16::try_from('Y').unwrap()];
+    for _ in 0..1200 {
+        let key = uefi::system::with_stdin(|stdin| stdin.read_key());
+        match key {
+            Ok(Some(Key::Printable(c))) => return yes.contains(&c),
+            Ok(Some(Key::Special(_))) => return false,
+            _ => boot::stall(Duration::from_millis(50)),
+        }
+    }
+    false
+}
+
 #[entry]
 fn main() -> Status {
     uefi::helpers::init().unwrap();
+    let _ = uefi::system::with_stdin(|stdin| stdin.reset(false));
+    if !confirmed() {
+        println!("");
+        println!("  Nothing was changed. Choose macOS to start normally.");
+        boot::stall(Duration::from_secs(4));
+        return Status::ABORTED;
+    }
     let name = cstr16!("boot-args");
     let mut buf = [0u8; 1024];
     let current: Vec<u8> = match runtime::get_variable(name, &APPLE_BOOT, &mut buf) {
@@ -56,7 +83,7 @@ fn main() -> Status {
     println!("");
     println!("  NullMoth: the next macOS start removes the NVIDIA driver and restarts by itself.");
     println!("  Choose your macOS disk now, or restart: the driver stays off until it has been removed.");
-    println!("  The screen may stay dark until the second restart.");
+    println!("  The screen stays on while it works.");
     println!("  Afterwards this Mac is back to how it was before NullMoth was installed.");
     boot::stall(Duration::from_secs(6));
     Status::SUCCESS

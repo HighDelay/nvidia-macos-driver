@@ -347,6 +347,27 @@ else
     # Retain candidate discovery, but require explicit selection without boot-path proof.
     # File modification time does not identify the firmware startup partition: copies and clocks can match.
     # Require the actual boot-path/GPT identity or an explicit verified selection before changing OpenCore.
+    # Without boot-path (some configs hide it): the running Mac's serial number IS the config's SystemSerialNumber -
+    # OpenCore wrote it into this boot - so a candidate whose config holds this serial is the one that started the Mac.
+    # WAS: stopped and asked (15 Macs on 1.1-1.2, most with a 1401 stick plugged in next to the internal EFI).
+    if [ "$BOOT_BOUND" != 1 ]; then
+      serial=$(ioreg -rd1 -c IOPlatformExpertDevice | awk -F'"' '/IOPlatformSerialNumber/{print $4}')
+      match=""
+      if [ -n "$serial" ]; then
+        for d in $found; do mount_efi "$d" || continue; mp=$MOUNT_POINT; rel=$(ocrel_in "$mp")
+          s=$(plutil -extract PlatformInfo.Generic.SystemSerialNumber raw -o - "$mp/$rel/config.plist" 2>/dev/null)
+          [ "$s" = "$serial" ] && match="$match $d"; done
+      fi
+      if [ "$(echo $match | wc -w | tr -d ' ')" = 1 ]; then
+        found=${match# }; BOOT_BOUND=1; ok "OpenCore started this Mac from $found (its config sets this Mac's serial number)"
+      elif [ -n "$match" ]; then
+        # The usual tie: OpenCore was copied from the 1401 stick to the macOS disk, so both configs set this serial.
+        # The copy on the disk macOS runs from is the one in use once a Mac starts without the stick (measured on a
+        # Mac with both: the internal copy is what started it).
+        esp=$(boot_esp)
+        for d in $match; do [ "$d" = "$esp" ] && { found=$d; BOOT_BOUND=1; ok "OpenCore started this Mac from $d (on the macOS disk; the copy on$(echo " $match" | sed "s/ $d//") sets the same serial)"; }; done
+      fi
+    fi
     if [ "$BOOT_BOUND" != 1 ]; then
       for d in $found; do echo "NOTE candidate $d"; done
       stop "OpenCore's startup partition could not be confirmed - select the partition this Mac started from"
