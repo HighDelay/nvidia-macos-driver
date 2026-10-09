@@ -224,10 +224,32 @@ static BOOL nvmtl_sel1_idle(int *r) { return __atomic_load_n(r, __ATOMIC_ACQUIRE
 }
 @end
 
+// Apple's GL/OpenCL-on-Metal layer reads reflection objects through MTLArgument/MTLType getters that change between
+// macOS builds. Geekbench's OpenCL build aborted on an unimplemented one three times (10-07 twice, then a 1.2.0 RTX 3060
+// report on 10-09), each time after the previous getters were added. The build that worked had a forwarding net that
+// answered ZERO to every getter it did not implement; this is that net. respondsToSelector: still says NO, so code
+// that asks first is unchanged; a direct send gets 0 / nil / NO and the selector is logged, so it can be implemented.
+static NSMethodSignature *nvgl_zero_sig(SEL s) {
+    char types[48] = "Q@:";  // integer-class return: 0 in rax answers NSUInteger, BOOL, enums and nil alike
+    int args = 0;
+    for (const char *c = sel_getName(s); *c; c++) args += *c == ':';
+    for (int i = 0; i < args && i < 16; i++) strcat(types, "Q");
+    return [NSMethodSignature signatureWithObjCTypes:types];
+}
+static void nvgl_zero(NSInvocation *inv, const char *cls) {
+    nvlog("GL: %s asked -%s (answered 0)", cls, sel_getName(inv.selector));
+    char zero[64] = {0};
+    NSUInteger len = inv.methodSignature.methodReturnLength;
+    if (len && len <= sizeof zero) [inv setReturnValue:zero];
+}
+#define NVGL_ZERO_NET(cls) \
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)s { return [super methodSignatureForSelector:s] ?: nvgl_zero_sig(s); } \
+- (void)forwardInvocation:(NSInvocation *)inv { nvgl_zero(inv, #cls); }
+
 @interface NVMTLGLPointerType : MTLPointerType {
   @public MTLDataType _elem; MTLBindingAccess _access; NSUInteger _size, _align; } @end
 @implementation NVMTLGLPointerType
-- (void)doesNotRecognizeSelector:(SEL)s { nvlog("GL: NVMTLGLPointerType asked -%s (NOT IMPLEMENTED)", sel_getName(s)); [super doesNotRecognizeSelector:s]; }
+NVGL_ZERO_NET(NVMTLGLPointerType)
 - (MTLDataType)dataType { return MTLDataTypePointer; }
 - (MTLDataType)elementType { return _elem; }
 - (MTLBindingAccess)access { return _access; }
@@ -293,7 +315,7 @@ static BOOL nvmtl_sel1_idle(int *r) { return __atomic_load_n(r, __ATOMIC_ACQUIRE
 - (id)elementStructType { return nil; }
 - (id)elementArrayType { return nil; }
 - (id)elementPointerType { return nil; }
-- (void)doesNotRecognizeSelector:(SEL)s { nvlog("GL: NVMTLGLBinding asked -%s (NOT IMPLEMENTED)", sel_getName(s)); [super doesNotRecognizeSelector:s]; }
+NVGL_ZERO_NET(NVMTLGLBinding)
 - (NSString *)description { return [NSString stringWithFormat:@"<NVMTLGLBinding %@ type %ld access %ld index %lu size %lu>",
                                      _name, (long)_type, (long)_access, (unsigned long)_index, (unsigned long)_size]; }
 @end
@@ -331,7 +353,7 @@ static BOOL nvmtl_sel1_idle(int *r) { return __atomic_load_n(r, __ATOMIC_ACQUIRE
 - (NSUInteger)offset { return 0; }
 - (NSUInteger)stride { return 0; }
 - (NSUInteger)argumentIndex { return 0; }
-- (void)doesNotRecognizeSelector:(SEL)s { nvlog("GL: NVMTLGLTexBinding asked -%s (NOT IMPLEMENTED)", sel_getName(s)); [super doesNotRecognizeSelector:s]; }
+NVGL_ZERO_NET(NVMTLGLTexBinding)
 - (NSString *)description { return [NSString stringWithFormat:@"<NVMTLGLTexBinding %@ access %ld index %lu textureType %lu>", _name, (long)_access, (unsigned long)_index, (unsigned long)_ttype]; }
 @end
 @interface NVMTLGLFunctionReflection : NSObject { @public NSArray *_args; } @end
@@ -342,7 +364,7 @@ static BOOL nvmtl_sel1_idle(int *r) { return __atomic_load_n(r, __ATOMIC_ACQUIRE
 - (NSArray *)tags { return @[]; }
 - (NSData *)pluginReturnData { return nil; }
 - (NSUInteger)primitiveKind { return 0; }
-- (void)doesNotRecognizeSelector:(SEL)s { nvlog("GL: NVMTLGLFunctionReflection asked -%s (NOT IMPLEMENTED)", sel_getName(s)); [super doesNotRecognizeSelector:s]; }
+NVGL_ZERO_NET(NVMTLGLFunctionReflection)
 @end
 
 static NSArray *nvmtl_gl_cl_bindings(NSString *ll) {
