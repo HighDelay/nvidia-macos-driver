@@ -4639,6 +4639,31 @@ diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --
           image->is_compressed = true;
           plane->addr = mem->mem->va->addr + offset_B;
        } else {
+@@ -1641,9 +1796,22 @@
+          if (result != VK_SUCCESS)
+             return result;
+ 
++         /* The plane VA is rounded up to 64 KB. Video memory allocations are rounded the same way, but a
++          * system-memory allocation is exact, so binding the whole VA could run past it. Bind the part the
++          * memory holds; the rest of the VA is padding the GPU never reads. Memory smaller than the image
++          * itself is an error, not an assertion. */
++         const uint64_t bind_align_B = mem->mem->bind_align_B;
++         uint64_t range_B = plane->va->size_B;
++         if (offset_B + range_B > mem->mem->size_B) {
++            const uint64_t need_B = align64(plane->nil.size_B, bind_align_B);
++            if (offset_B > mem->mem->size_B || offset_B + need_B > mem->mem->size_B)
++               return vk_errorf(dev, VK_ERROR_UNKNOWN, "image plane (%llu B) does not fit its memory (%llu B at %llu)",
++                                (unsigned long long)need_B, (unsigned long long)mem->mem->size_B,
++                                (unsigned long long)offset_B);
++            range_B = (mem->mem->size_B - offset_B) & ~(bind_align_B - 1);
++         }
+          result = nvkmd_va_bind_mem(plane->va, &image->vk.base, 0,
+-                                    mem->mem, offset_B,
+-                                    plane->va->size_B);
++                                    mem->mem, offset_B, range_B);
+          if (result != VK_SUCCESS)
+             return result;
+       }
 diff -ruN --exclude=subprojects --exclude=ci --exclude=build* --exclude=*.pyc --exclude=__pycache__ --exclude=*.bak* --exclude=*.orig --exclude=.git --exclude=open-gpu-kernel-modules --strip-trailing-cr upmesa/mesa-17ca6174/src/nouveau/vulkan/nvk_instance.c rebase263/mesa/src/nouveau/vulkan/nvk_instance.c
 --- a/src/nouveau/vulkan/nvk_instance.c	2026-10-05 06:47:14
 +++ b/src/nouveau/vulkan/nvk_instance.c	2026-10-05 09:47:06
