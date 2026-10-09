@@ -30,6 +30,9 @@ elif name=='stat':
  else:sys.exit(98)
 
 elif name=='chown':pass
+elif name=='sudo':
+ # sudo -u _windowserver /bin/test -r FILE: WindowServer's user is "other" to a root:wheel file
+ sys.exit(0 if a[:2]==['-u','_windowserver'] and Path(a[-1]).stat().st_mode&0o004 else 1)
 elif name=='mktemp':
  counter=r/'temps';n=int(counter.read_text())+1 if counter.exists() else 1;counter.write_text(str(n))
  p=r/('scratch-'+str(n));p.mkdir();print(str(p))
@@ -89,7 +92,7 @@ class Install(unittest.TestCase):
             p=self.root/rel;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(value);self.old[p]=p.read_bytes()
         other=self.root/'Library/Extensions/NVMeFix.kext/fixture';other.parent.mkdir();other.write_text('unrelated');other.chmod(0o400);self.other=other
         self.bin=self.root/'bin';self.bin.mkdir()
-        for name in ['id','uname','sw_vers','ioreg','nvram','chown','mktemp','kmutil','stat']:
+        for name in ['id','uname','sw_vers','ioreg','nvram','chown','mktemp','kmutil','stat','sudo']:
             p=self.bin/name;p.write_text('#!'+sys.executable+'\n'+MOCK);p.chmod(0o755)
         source=(REPO/'package/install.sh').read_text()
         # Every installed path points into the private fixture. Real kmutil/ioreg/id are shadowed.
@@ -141,6 +144,11 @@ class Install(unittest.TestCase):
         create=[c for c in calls if c[:2]==['kmutil','create']][-1]
         self.assertEqual(create[create.index('--repository')+1],str(self.root/'Library/Extensions'))
         self.assertEqual(self.other.stat().st_mode&0o777,0o400)
+    def test_allow_list_is_readable_by_windowserver_even_from_a_private_copy(self):
+        # the privileged helper's umask 077 left the copy at 0600: WindowServer got no Metal device and aborted
+        (self.payload/'Library/GPUBundles/nvmtl-allow.txt').chmod(0o600)
+        r=self.run_install();self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertEqual((self.root/'Library/GPUBundles/nvmtl-allow.txt').stat().st_mode&0o777,0o644)
     def test_external_audited_installer_keeps_archived_payload_unchanged(self):
         audited=self.root/'audited-install.sh';audited.write_bytes(self.script.read_bytes())
         self.script.write_text('#!/bin/bash\necho ARCHIVED_INSTALLER_EXECUTED\nexit 99\n')
