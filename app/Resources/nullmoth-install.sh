@@ -189,6 +189,9 @@ rm -rf "$T"
 ok "installed"
 
 step "6. boot-args"
+# A remove flag left by a boot-picker removal that did not finish keeps every NullMoth kext off at boot. Installing
+# again means the driver is wanted, so the flag goes; the boot picker sets it again when it is chosen.
+nvram -d 7C436110-AB2A-4BBB-A880-FE41995C9F82:nullmoth-remove 2>/dev/null || true
 ba=$(nvram boot-args 2>/dev/null | cut -f2-)
 for a in nvfb=1 nvaccel=1; do case " $ba " in *" $a "*) ;; *) echo "   NOTE: boot-args lack '$a' — add it in your OpenCore config.plist (see README)";; esac; done
 

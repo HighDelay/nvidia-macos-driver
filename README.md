@@ -6,7 +6,7 @@ The driver implements NVIDIA-backed display and Metal interfaces. Feature availa
 
 Made by **NullMoth Systems**.
 
-**Latest update:** [1401 and NVIDIA driver 1.1.0](docs/RELEASE-1.1.0.md). See the changes, validation and qualification scope before updating.
+**Latest update:** [1401 and NVIDIA driver 1.2.0](docs/RELEASE-1.2.0.md). See the changes, validation and qualification scope before updating.
 
 Installing macOS from Windows? Use **1401**: https://github.com/nullmoth/1401
 
