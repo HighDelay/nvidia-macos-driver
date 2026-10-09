@@ -587,6 +587,17 @@ pub(super) fn add_needed_capabilities(ctx: &mut Ctx, variable_pointer_requiremen
     if has_stencil_export {
         want.push(Capability::StencilExportEXT);
     }
+    let has_draw_parameters = ctx.module.annotations.iter().any(|instruction| {
+        instruction.class.opcode == Op::Decorate
+            && instruction.operands.get(1) == Some(&Operand::Decoration(Decoration::BuiltIn))
+            && matches!(
+                instruction.operands.get(2),
+                Some(&Operand::BuiltIn(BuiltIn::BaseVertex)) | Some(&Operand::BuiltIn(BuiltIn::BaseInstance))
+            )
+    });
+    if has_draw_parameters {
+        want.push(Capability::DrawParameters);
+    }
     let has_query = ctx
         .module
         .functions
@@ -823,6 +834,9 @@ pub(super) fn add_needed_capabilities(ctx: &mut Ctx, variable_pointer_requiremen
     if want.contains(&Capability::FragmentBarycentricKHR) {
         let ext = "SPV_KHR_fragment_shader_barycentric";
         require_extension(ctx, ext);
+    }
+    if want.contains(&Capability::DrawParameters) {
+        require_extension(ctx, "SPV_KHR_shader_draw_parameters");
     }
     if want.contains(&Capability::StencilExportEXT) {
         let ext = "SPV_EXT_shader_stencil_export";

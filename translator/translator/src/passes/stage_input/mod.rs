@@ -494,6 +494,8 @@ pub(super) fn build_stage_input(
                 Some(VertRole::Sampler(_)) => s == "sampler",
                 Some(VertRole::VertexId) => s == "vertex_id",
                 Some(VertRole::InstanceId) => s == "instance_id",
+                Some(VertRole::BaseVertex) => s == "base_vertex",
+                Some(VertRole::BaseInstance) => s == "base_instance",
                 Some(VertRole::PatchControlPoints) => s == "patch_control_points",
                 Some(VertRole::PatchInput(_)) => s == "patch_input",
                 Some(VertRole::PositionInPatch) => s == "position_in_patch",
@@ -1523,9 +1525,16 @@ pub(super) fn build_stage_input(
                     },
                 ));
             }
-        } else if role_is("vertex_id") || role_is("instance_id") {
+        } else if role_is("vertex_id") || role_is("instance_id") || role_is("base_vertex") || role_is("base_instance") {
+            // Metal's vertex_id / instance_id already include the base, like Vulkan's VertexIndex / InstanceIndex, so the
+            // bases map one to one. WAS: base_vertex / base_instance had no lowering and every pipeline using them was
+            // refused (Blender 4.2's specialized UI shaders: the app crashed at startup, 10-09).
             let builtin = if role_is("vertex_id") {
                 BuiltIn::VertexIndex
+            } else if role_is("base_vertex") {
+                BuiltIn::BaseVertex
+            } else if role_is("base_instance") {
+                BuiltIn::BaseInstance
             } else {
                 BuiltIn::InstanceIndex
             };

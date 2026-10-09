@@ -30,7 +30,7 @@ static inline int nvmtl_sampler_info(const nvmtl_sampler_desc *d,
     if (!d || !caps || d->min_filter > 1 || d->mag_filter > 1 || d->mip_filter > 2 ||
         d->compare_function > 7 || d->border_color > 2 || d->max_anisotropy < 1 ||
         d->max_anisotropy > 16 || !isfinite(d->lod_min) || !isfinite(d->lod_max) ||
-        d->lod_min < 0 || d->lod_max < d->lod_min) return -1;
+        d->lod_max < d->lod_min) return -1;
     VkSamplerCreateInfo s = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
     s.minFilter = d->min_filter ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
     s.magFilter = d->mag_filter ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
@@ -44,7 +44,9 @@ static inline int nvmtl_sampler_info(const nvmtl_sampler_desc *d,
     if (zero && border && d->border_color != 0) return -1;
     s.borderColor = zero || d->border_color == 0 ? VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK :
                     d->border_color == 1 ? VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK : VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
-    s.minLod = d->lod_min; s.maxLod = d->lod_max;
+    /* Metal takes any lodMinClamp; a negative one means "no lower clamp" (Blender 4.2 sets -1000 on every sampler).
+       WAS refused - every Blender sampler failed and the UI drew without them. LOD 0 is the same floor in Vulkan. */
+    s.minLod = d->lod_min < 0 ? 0.0f : d->lod_min; s.maxLod = d->lod_max < s.minLod ? s.minLod : d->lod_max;
     if (d->mip_filter == 0) {
 
         s.minLod = 0; s.maxLod = d->min_filter == d->mag_filter ? 0 : 0.25f;

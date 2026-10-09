@@ -257,6 +257,9 @@ pub enum VertRole {
     IntersectionFunctionTable(u32),
     VertexId,
     InstanceId,
+    // [[base_vertex]] / [[base_instance]]: Vulkan BaseVertex / BaseInstance (DrawParameters)
+    BaseVertex,
+    BaseInstance,
     PatchControlPoints,
     PatchInput(u32),
     PositionInPatch,
@@ -1766,6 +1769,8 @@ pub const AIR_SYSTEM_VALUE_ROLES: &[&str] = &[
     "amplification_count",
     "amplification_id",
     "barycentric_coord",
+    "base_instance",
+    "base_vertex",
     "dispatch_threads_per_threadgroup",
     "front_facing",
     "instance_id",
@@ -1832,6 +1837,8 @@ pub const FRAGMENT_INPUT_ROLES: &[&str] = &[
 pub const VERTEX_INPUT_ROLES: &[&str] = &[
     "amplification_count",
     "amplification_id",
+    "base_instance",
+    "base_vertex",
     "buffer",
     "indirect_buffer",
     "instance_id",
@@ -2558,6 +2565,8 @@ fn parse_air_vertex_meta_with_nodes(
                 }
                 "vertex_id" => VertRole::VertexId,
                 "instance_id" => VertRole::InstanceId,
+                "base_vertex" => VertRole::BaseVertex,
+                "base_instance" => VertRole::BaseInstance,
                 "patch_control_point_input" => {
                     let refs = refs_in(node);
                     let function = refs

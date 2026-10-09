@@ -706,6 +706,7 @@ static int nvmtl_vk_initialize(void)
         v12.vulkanMemoryModelDeviceScope = q12.vulkanMemoryModelDeviceScope;
         v11.storageBuffer16BitAccess = q11.storageBuffer16BitAccess;
         v11.uniformAndStorageBuffer16BitAccess = q11.uniformAndStorageBuffer16BitAccess;
+        v11.shaderDrawParameters = q11.shaderDrawParameters;  /* [[base_vertex]] / [[base_instance]] (Blender 4.2) */
         g_float16 = q12.shaderFloat16 == VK_TRUE;
         g_vulkan_memory_model = q12.vulkanMemoryModel == VK_TRUE;
         g_vulkan_memory_device_scope = q12.vulkanMemoryModelDeviceScope == VK_TRUE;
