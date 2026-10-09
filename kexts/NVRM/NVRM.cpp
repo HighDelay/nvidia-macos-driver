@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
  */
 
+#include "nvrm_off.h"
 #include "nv-xnu.h"
 #include <IOKit/IOService.h>
 #include <IOKit/IOUserClient.h>
@@ -258,7 +259,7 @@ static inline bool nvrmNameIsUnknown(const char *s)
 
 IOService *NVRM::probe(IOService *provider, SInt32 *score)
 {
-    { char nvoff[8]; if (PE_parse_boot_argn("-nvoff", nvoff, sizeof nvoff)) return NULL; }
+    { if (nvrm_driver_off()) return NULL; }
     IOService *res = super::probe(provider, score);
     IOPCIDevice *pci = OSDynamicCast(IOPCIDevice, provider);
     if (!pci) return NULL;
@@ -280,7 +281,7 @@ IOService *NVRM::probe(IOService *provider, SInt32 *score)
 
 bool NVRM::start(IOService *provider)
 {
-    { char nvoff[8]; if (PE_parse_boot_argn("-nvoff", nvoff, sizeof nvoff)) return false; }
+    { if (nvrm_driver_off()) return false; }
     if (!super::start(provider)) return false;
     fPCI = OSDynamicCast(IOPCIDevice, provider);
     if (!fPCI) return false;

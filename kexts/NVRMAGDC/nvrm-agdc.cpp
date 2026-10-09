@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
  */
 
+#include "nvrm_off.h"
 #include <IOKit/IOService.h>
 #include <IOKit/IOLib.h>
 #include <sys/sysctl.h>
@@ -267,7 +268,7 @@ public:
 OSDefineMetaClassAndStructors(NVDAGDCLoader, IOService)
 bool NVDAGDCLoader::start(IOService *provider)
 {
-    { char nvoff[8]; if (PE_parse_boot_argn("-nvoff", nvoff, sizeof nvoff)) return false; }
+    { if (nvrm_driver_off()) return false; }
     if (!IOService::start(provider)) return false;
     nvdaAgdcInstallSysctl(); FBLOG("loaded; idle until `sysctl debug.nvrmfb_agdc=1`"); return true;
 }

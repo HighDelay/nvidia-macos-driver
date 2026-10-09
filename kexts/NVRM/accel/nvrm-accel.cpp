@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
  */
 
+#include "../nvrm_off.h"
 #include <IOKit/IOService.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/pci/IOPCIDevice.h>
@@ -465,7 +466,7 @@ public:
         return IOGraphicsAccelerator2::probe(provider, score);
     }
     virtual bool start(IOService *provider) APPLE_KEXT_OVERRIDE {
-        { char nvoff[8]; if (PE_parse_boot_argn("-nvoff", nvoff, sizeof nvoff)) return false; }
+        { if (nvrm_driver_off()) return false; }
         uint32_t gate = 0;
         if (!PE_parse_boot_argn("nvaccel", &gate, sizeof gate) || !gate) { ALOG("boot-arg nvaccel=1 absent: NOT starting (boot-loop guard)"); return false; }
         if (IOPCIDevice *pci = OSDynamicCast(IOPCIDevice, provider)) {

@@ -55,7 +55,8 @@ fn main() -> Status {
     }
     println!("");
     println!("  NullMoth: the next macOS start removes the NVIDIA driver and restarts by itself.");
-    println!("  Choose your macOS disk now. The screen may stay dark until the second restart.");
+    println!("  Choose your macOS disk now, or restart: the driver stays off until it has been removed.");
+    println!("  The screen may stay dark until the second restart.");
     println!("  Afterwards this Mac is back to how it was before NullMoth was installed.");
     boot::stall(Duration::from_secs(6));
     Status::SUCCESS
