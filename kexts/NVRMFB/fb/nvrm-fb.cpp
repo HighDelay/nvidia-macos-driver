@@ -157,7 +157,10 @@ class NVRMNVDAFramebuffer : public IOFramebuffer {
     static void reflipFire(thread_call_param_t p0, thread_call_param_t);
     bool reflip();
     static void eventCallback(const struct NvKmsKapiEvent *event) {
-        FBLOG("kapi event type %d", (int)event->type);
+        // only display changes are logged: the routine events arrive every minute for as long as the Mac is up, and
+        // in sent logs they pushed every boot line past the collector's 512 KB limit
+        if (event->type == NVKMS_EVENT_TYPE_DPY_CHANGED || event->type == NVKMS_EVENT_TYPE_DYNAMIC_DPY_CONNECTED)
+            FBLOG("kapi event type %d (display change)", (int)event->type);
         if (event->type == NVKMS_EVENT_TYPE_FLIP_OCCURRED && event->u.flipOccurred.head < 8
             && event->u.flipOccurred.layer == NVKMS_KAPI_LAYER_PRIMARY_IDX)
             OSIncrementAtomic(&sFlipLatched[event->u.flipOccurred.head]);
