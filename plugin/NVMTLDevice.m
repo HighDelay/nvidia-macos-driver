@@ -31,8 +31,11 @@ static inline int nvmtl_rel_devpath(const char *p) {
 }
 static inline int nvmtl_rel_access(const char *p, int m) { return nvmtl_rel_devpath(p) ? -1 : access(p, m); }
 static inline FILE *nvmtl_rel_fopen(const char *p, const char *m) { return nvmtl_rel_devpath(p) ? NULL : fopen(p, m); }
-#define access nvmtl_rel_access
-#define fopen nvmtl_rel_fopen
+// Function-like on purpose: an object-like `#define access` also renamed every Objective-C `-access` method in this
+// one-TU plugin, so release builds answered -[MTLBinding access] with nothing (selector nvmtl_rel_access in the
+// shipped binary). Apple's OpenCL then read every image as read-only and refused write-only images (-38).
+#define access(p, m) nvmtl_rel_access(p, m)
+#define fopen(p, m) nvmtl_rel_fopen(p, m)
 #endif
 int nvmtl_vk_init(void);
 const char *nvmtl_vk_device_name(void);
