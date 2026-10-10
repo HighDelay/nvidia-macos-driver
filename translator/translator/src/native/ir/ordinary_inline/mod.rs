@@ -336,13 +336,35 @@ fn function_type_capabilities(
 }
 
 impl LlModule {
+    /// Inlines leaf helpers until none is left. A helper that calls other helpers (Geekbench 6's OpenCL compare_intensity
+    /// calls the cos/sin/round wrappers) only becomes a leaf once those are spliced into it, and one pass never came
+    /// back for it: the call stayed, and a descriptor-backed pointer argument cannot cross a call, so the kernel failed
+    /// to translate ("byte cursor cannot cross the call", Feature Matching). Bounded: a call graph is at most this deep
+    /// before a round splices nothing.
     pub(in crate::native) fn inline_ordinary_leaf_helpers(&mut self) -> TypedInlineStats {
+        const MAX_ROUNDS: usize = 8;
+        let mut total = TypedInlineStats::default();
+        let mut site = 0usize;
+        for _ in 0..MAX_ROUNDS {
+            let (stats, next_site) = self.inline_ordinary_leaf_round(site);
+            site = next_site;
+            total.splices += stats.splices;
+            total.helper_instances += stats.helper_instances;
+            if stats.splices == 0 {
+                break;
+            }
+        }
+        total
+    }
+
+    /// One round; `first_site` continues the previous round's numbering so spliced locals never share a name.
+    fn inline_ordinary_leaf_round(&mut self, first_site: usize) -> (TypedInlineStats, usize) {
         let Some(entry_name) = self
             .entry_name
             .clone()
             .or_else(|| self.functions.first().map(|function| function.name.clone()))
         else {
-            return TypedInlineStats::default();
+            return (TypedInlineStats::default(), first_site);
         };
         let bodied_functions = self
             .functions
@@ -377,7 +399,7 @@ impl LlModule {
             })
             .collect::<HashMap<_, _>>();
         if helpers.is_empty() {
-            return TypedInlineStats::default();
+            return (TypedInlineStats::default(), first_site);
         }
         let source_pointees = self.ptr_pointees.clone();
         let mut source_value_pointees = source_pointees.clone();
@@ -400,7 +422,7 @@ impl LlModule {
         let mut cloned_pointer_loads = Vec::new();
         let mut processed_helpers = HashSet::new();
         let mut stats = TypedInlineStats::default();
-        let mut site = 0usize;
+        let mut site = first_site;
         for function_index in 0..self.functions.len() {
             let caller_name = self.functions[function_index].name.clone();
             if !reachable.contains(&caller_name) {
@@ -618,6 +640,6 @@ impl LlModule {
         }
         self.functions
             .retain(|function| remaining_reachable.contains(&function.name));
-        stats
+        (stats, site)
     }
 }

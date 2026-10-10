@@ -319,21 +319,19 @@ define void @main(ptr %function) {
 
     let stats = module.inline_ordinary_leaf_helpers();
 
+    // WAS splices 1 with has_bodied_callee residual: one pass spliced the leaf into it and never came back. Rounds now
+    // repeat, so the wrapper is a leaf in round two; alloca, indirect calls and real control flow still stay residual.
     assert_eq!(
         stats,
         TypedInlineStats {
-            splices: 1,
-            helper_instances: 1,
+            splices: 2,
+            helper_instances: 2,
         },
-        "only the reachable one-block leaf is inlined"
+        "the leaf, then the wrapper that became a leaf"
     );
     assert_eq!(
         call_names(function(&module, "main")),
-        vec!["has_alloca", "has_bodied_callee", "has_indirect", "has_cfg"]
-    );
-    assert!(
-        call_names(function(&module, "has_bodied_callee")).is_empty(),
-        "the leaf call inside the residual wrapper was spliced"
+        vec!["has_alloca", "has_indirect", "has_cfg"]
     );
 }
 
@@ -501,4 +499,37 @@ define void @main() {
         call_names(function(&module, "_GLOBAL__sub_I_residual")).is_empty(),
         "the emitter-injected constructor root must not hide its reachable leaf"
     );
+}
+
+#[test]
+fn a_helper_that_calls_a_wrapper_is_spliced_once_the_wrapper_is() {
+    // Geekbench 6 OpenCL Feature Matching: compare_intensity(ptr image cursor) calls the cos/round wrappers. One pass
+    // spliced the wrappers into it but never came back, so the call carrying a buffer pointer stayed and the kernel
+    // failed ("byte cursor cannot cross the call"). Every round is a one-block leaf splice; the call graph is gone.
+    let ll = r#"
+define internal float @wcos(float %x) {
+  %r = tail call float @air.cos(float %x)
+  ret float %r
+}
+
+define internal i32 @compare(ptr addrspace(1) %cur, float %angle) {
+  %c = tail call float @wcos(float %angle)
+  %v = load i32, ptr addrspace(1) %cur
+  %f = fptosi float %c to i32
+  %r = add i32 %v, %f
+  ret i32 %r
+}
+
+define void @main(ptr addrspace(1) %image) {
+  %r = call i32 @compare(ptr addrspace(1) %image, float 1.000000e+00)
+  ret void
+}
+
+declare float @air.cos(float)
+"#;
+    let mut module = parsed(ll);
+    let stats = module.inline_ordinary_leaf_helpers();
+    let main = function(&module, "main");
+    assert_eq!(call_names(main), vec!["air.cos"], "main keeps only the intrinsic, no helper call");
+    assert_eq!(stats.splices, 2, "wcos into compare, then compare into main");
 }
