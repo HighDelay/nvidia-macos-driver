@@ -3917,9 +3917,28 @@ void nvmtl_vk_cmd_dispatch_threads(nvk_cmdbuf *c, nvk_pipeline *p, const uint32_
         if (!vp) { c->skipped++; continue; }
         pvkCmdBindPipeline(c->cb, VK_PIPELINE_BIND_POINT_COMPUTE, vp);
         if (!bound) { pvkCmdBindDescriptorSets(c->cb, VK_PIPELINE_BIND_POINT_COMPUTE, (VkPipelineLayout)p->layout, 0, g_heapSet ? 3 : 2, s, nvmtl_table_ubo() ? 2 : 0, g_dyn_zero); bound = 1; }
-        uint32_t pc[12] = { threads[0], threads[1], threads[2], tbase[0], tbase[1], tbase[2], gbase[0], gbase[1], gbase[2], groups[0], groups[1], groups[2] };
-        pvkCmdPushConstants(c->cb, (VkPipelineLayout)p->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, NVMTL_DISPATCH_PC_BYTES, pc);
-        pvkCmdDispatch(c->cb, gc[0], gc[1], gc[2]);
+        // Metal allows any group count per axis; Vulkan caps it (NVK: 0x7fffffff x 65535 x 65535, the width of the QMD
+        // grid fields). Geekbench's OpenCL Face Detection dispatched past 65535 on y and NAK's nak_fill_qmd aborted the
+        // process. Split into chunks and advance thread_base/threadgroup_base, which the translated kernel adds to
+        // GlobalInvocationId/WorkgroupId, so every chunk sees the positions of the whole grid.
+        uint32_t cap[3];
+        for (int d = 0; d < 3; d++) cap[d] = g_lim.maxComputeWorkGroupCount[d] ? g_lim.maxComputeWorkGroupCount[d] : 65535;
+        if ((gc[0] > cap[0] || gc[1] > cap[1] || gc[2] > cap[2])) {
+            static int said;
+            if (!said++) nvlog("vk: dispatch of %ux%ux%u groups exceeds the device's %ux%ux%u — split into chunks",
+                               gc[0], gc[1], gc[2], cap[0], cap[1], cap[2]);
+        }
+        for (uint32_t z = 0; z < gc[2]; z += cap[2])
+        for (uint32_t y = 0; y < gc[1]; y += cap[1])
+        for (uint32_t x = 0; x < gc[0]; x += cap[0]) {
+            uint32_t off[3] = { x, y, z }, n[3];
+            for (int d = 0; d < 3; d++) n[d] = gc[d] - off[d] < cap[d] ? gc[d] - off[d] : cap[d];
+            uint32_t pc[12] = { threads[0], threads[1], threads[2],
+                                tbase[0] + off[0] * local[0], tbase[1] + off[1] * local[1], tbase[2] + off[2] * local[2],
+                                gbase[0] + off[0], gbase[1] + off[1], gbase[2] + off[2], groups[0], groups[1], groups[2] };
+            pvkCmdPushConstants(c->cb, (VkPipelineLayout)p->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, NVMTL_DISPATCH_PC_BYTES, pc);
+            pvkCmdDispatch(c->cb, n[0], n[1], n[2]);
+        }
     }
 }
 void nvmtl_vk_cmd_dispatch_indirect_tg(nvk_cmdbuf *c, nvk_pipeline *p, nvk_buffer *b, size_t off, const uint32_t tgIn[3])
@@ -3948,6 +3967,14 @@ void nvmtl_vk_cmd_dispatch(nvk_cmdbuf *c, nvk_pipeline *p, uint32_t gx, uint32_t
     if (!s[0] || !s[1]) { c->nobind = 1; return; }
     c->nobind = 0;
     pvkCmdBindDescriptorSets(c->cb, VK_PIPELINE_BIND_POINT_COMPUTE, (VkPipelineLayout)p->layout, 0, g_heapSet ? 3 : 2, s, nvmtl_table_ubo() ? 2 : 0, g_dyn_zero);
+    // This path reads WorkgroupId raw (no base push constants), so it cannot be chunked. Past the device's group
+    // count NAK aborts the whole app inside nak_fill_qmd; refuse the one dispatch loudly instead.
+    if ((g_lim.maxComputeWorkGroupCount[1] && gy > g_lim.maxComputeWorkGroupCount[1]) ||
+        (g_lim.maxComputeWorkGroupCount[2] && gz > g_lim.maxComputeWorkGroupCount[2]) ||
+        (g_lim.maxComputeWorkGroupCount[0] && gx > g_lim.maxComputeWorkGroupCount[0])) {
+        nvlog("vk: raw dispatch of %ux%ux%u groups exceeds the device limit — SKIPPED", gx, gy, gz);
+        c->skipped++; return;
+    }
     pvkCmdDispatch(c->cb, gx, gy, gz);
 }
 
