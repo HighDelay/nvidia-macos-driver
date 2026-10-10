@@ -552,6 +552,29 @@ fi
 NEEDBLOCK=0; bi=$(bidx)
 if [ -z "$bi" ]; then NEEDBLOCK=1; echo "CHANGE Kernel -> Block: exclude IONDRVSupport (the firmware framebuffer would take NVRMFB's display)"
 elif [ "$(get Kernel.Block.$bi.Enabled)" != true ]; then EDITS+=("Kernel.Block.$bi.Enabled|-bool|true"); echo "CHANGE Kernel -> Block: turn the IONDRVSupport exclude on"; fi
+# AMD (AMD Vanilla patches): with Shaneee's "Fix PAT" on, the driver stopped at "RmInitAdapter failed! (0x25:0x40:1310)"
+# right after a valid 8 GB BAR1 (user report 10-10, Ryzen 5 7600 + RTX 4060); switching to Algrey's "Fix PAT" - the one
+# 1401 builds with - reached the desktop and nothing else changed. Swap them where Algrey's entry for the same kernel range
+# is present but off; a config without it is left alone.
+i=0
+while cm=$(plutil -extract Kernel.Patch.$i.Comment raw -o - "$C" 2>/dev/null); do
+  case "$cm" in
+    *[Ss]haneee*[Ff]ix\ PAT*)
+      if [ "$(get Kernel.Patch.$i.Enabled)" = true ]; then
+        mn=$(get Kernel.Patch.$i.MinKernel); j=0
+        while cj=$(plutil -extract Kernel.Patch.$j.Comment raw -o - "$C" 2>/dev/null); do
+          case "$cj" in *[Aa]lgrey*[Ff]ix\ PAT*)
+            if [ "$(get Kernel.Patch.$j.MinKernel)" = "$mn" ] && [ "$(get Kernel.Patch.$j.Enabled)" != true ]; then
+              EDITS+=("Kernel.Patch.$i.Enabled|-bool|false" "Kernel.Patch.$j.Enabled|-bool|true")
+              echo "CHANGE Kernel -> Patch: Fix PAT from Shaneee's to Algrey's (Shaneee's stops the driver at RmInitAdapter on AMD)"
+            fi;;
+          esac
+          j=$((j+1))
+        done
+      fi;;
+  esac
+  i=$((i+1))
+done
 del=$(plutil -extract NVRAM.Delete.$B xml1 -o - "$C" 2>/dev/null); DELADD=()
 for k in boot-args csr-active-config; do echo "$del" | grep -q "<string>$k</string>" || { DELADD+=("$k"); echo "CHANGE NVRAM Delete: add $k (so OpenCore rewrites it every boot)"; }; done
 # A remove flag still set while installing is stale: installing means the driver is wanted. On some laptops and boards a
