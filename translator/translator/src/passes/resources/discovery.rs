@@ -722,6 +722,13 @@ pub(in crate::passes) fn texture_arg_shape(name: &str) -> ImageShape {
 }
 
 fn texture_arg_storage(name: &str) -> Option<(Dim, bool, ImageFormat, ImageComp)> {
+    // Apple's OpenCL declares every image as texture2d<unknown, ...>: the element type is only in the write itself
+    // (air.write_texture_2d.u.v4i32 for write_imageui). Reading "unknown" as float made the storage image Rgba32f and
+    // refused every uint/int write ("unsupported texel shape": Geekbench 6 OpenCL Face Detection), so it is no hint
+    // and write_texture_dims decides.
+    if is_unknown_element(name) {
+        return None;
+    }
     let shape = crate::meta::texture_shape_from_name(name);
     let fmt = shape.storage_format?.to_spirv_format();
     Some((
@@ -730,6 +737,12 @@ fn texture_arg_storage(name: &str) -> Option<(Dim, bool, ImageFormat, ImageComp)
         fmt,
         shape.component.to_image_comp(),
     ))
+}
+
+fn is_unknown_element(name: &str) -> bool {
+    name.split_once('<')
+        .and_then(|(_, rest)| rest.split(|c: char| c == ',' || c == '>').next())
+        .is_some_and(|elem| elem.trim() == "unknown")
 }
 
 fn sample_dim(name: &str) -> (Dim, bool) {
