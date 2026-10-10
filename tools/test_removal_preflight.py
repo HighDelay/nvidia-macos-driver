@@ -99,6 +99,13 @@ class RemovalPreflight(unittest.TestCase):
     def test_new_mount_is_cleaned_up_on_preflight_failure(self):
         self.assert_preflight_stop(self.run_remove(MOUNT_ON_REQUEST='1',FAIL_EDIT='UEFI.Quirks.ResizeGpuBars'))
         self.assertFalse((self.r/'mounted').exists())
+    def test_a_driver_with_no_install_record_is_still_removed(self):
+        self.state.unlink()
+        r=self.run_remove('--efi','replacement-esp');self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        c=plistlib.loads(self.cfg.read_bytes())
+        self.assertEqual(c['NVRAM']['Add'][BOOT]['boot-args'],'-v custom=1')
+        self.assertEqual(c['Misc']['Tools'],[])
+        self.assertTrue((self.r/'uninstall-calls').exists())
     def test_selected_replacement_partition_can_be_used(self):
         r=self.run_remove('--efi','replacement-esp');self.assertEqual(r.returncode,0,r.stdout+r.stderr)
     def test_success_preserves_unrelated_args_and_removes_driver_args(self):

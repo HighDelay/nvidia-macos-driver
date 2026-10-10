@@ -217,8 +217,23 @@ fi
 
 if [ $REMOVE = 1 ]; then
   step "Removing the NullMoth driver"
-  [ -f "$STATE" ] || stop "no install record in $STATE - was the driver installed by this app?"
-  . "$STATE" || stop "the install record is invalid - nothing changed"
+  if [ -f "$STATE" ]; then
+    . "$STATE" || stop "the install record is invalid - nothing changed"
+  else
+    # A driver installed from the 1401 stick, by hand, or by an app whose record was lost has no install record, and
+    # removal used to stop here (1.8 log 10-10), leaving the user with a driver they could not take out. Without a
+    # record nothing is restored from a backup: the driver's own settings come out of the OpenCore config this Mac
+    # started from (or the one selected), and the uninstaller removes its files.
+    note "no install record in $STATE; removing the driver from the OpenCore config this Mac started from"
+    CONFIG_SHA_AFTER=""; ADDED_ARGS=""; REMOVED_ARGS=""; CONFIG_BACKUP_REL=""
+    if [ -z "$CFG" ] && [ "$EFI" = auto ]; then
+      d=$(booted_part) || d=$(boot_esp)
+      [ -n "$d" ] || stop "no install record, and the OpenCore partition this Mac started from was not found; select its config.plist - nothing changed"
+      mount_efi "$d" || stop "could not mount the OpenCore partition $d - nothing changed"
+      r=$(ocrel_in "$MOUNT_POINT"); [ -n "$r" ] || stop "no OpenCore config for this Mac on $d; select its config.plist - nothing changed"
+      CONFIG_PATH="$MOUNT_POINT/$r/config.plist"; OCREL=$r
+    fi
+  fi
   C=""; MP=""
   if [ -n "$CFG" ]; then
     C=$CFG; [ -f "$C" ] || stop "the selected OpenCore config is missing - nothing changed"
@@ -298,7 +313,7 @@ if [ $REMOVE = 1 ]; then
     rm -f "$MP/${OCREL:-EFI/OC}/Tools/$TOOL_FILE" || stop "could not remove the picker tool; recovery remains available"
     ok "OpenCore removal settings published"
   fi
-  mv "$STATE" "$STATE.removed-$(date +%Y%m%d-%H%M%S)" || stop "could not archive the install record"
+  if [ -f "$STATE" ]; then mv "$STATE" "$STATE.removed-$(date +%Y%m%d-%H%M%S)" || stop "could not archive the install record"; fi
   rm -f "$AGENT" "$RECOVER" "$ST/nullmoth-recover.sh"
   ok "done - restart to finish"; cleanup; echo "RESULT ok"; exit 0
 fi
