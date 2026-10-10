@@ -248,7 +248,18 @@ pub(in crate::passes) fn recovered_image_for_private_operand(
     (candidate_dim == dim && candidate_arrayed == arrayed).then_some(candidate)
 }
 
+// Error text only. It walked every operand with no bound, so a loop phi (a value that reaches itself) recursed until
+// the stack overflowed: Geekbench 6's OpenCL Background Blur killed the process (SIGSEGV) instead of reporting why its
+// image operand did not resolve. Each value is described once, three levels deep.
 pub(in crate::passes) fn describe_value(ctx: &Ctx, value: Word) -> String {
+    let mut seen = std::collections::HashSet::new();
+    describe_value_bounded(ctx, value, 3, &mut seen)
+}
+
+fn describe_value_bounded(ctx: &Ctx, value: Word, depth: u32, seen: &mut std::collections::HashSet<Word>) -> String {
+    if !seen.insert(value) {
+        return "(described above)".to_string();
+    }
     let Some(inst) = value_inst(ctx, value) else {
         return "no defining instruction".to_string();
     };
@@ -256,7 +267,8 @@ pub(in crate::passes) fn describe_value(ctx: &Ctx, value: Word) -> String {
         .operands
         .iter()
         .map(|operand| match operand {
-            Operand::IdRef(id) => format!("IdRef({id}: {})", describe_value(ctx, *id)),
+            Operand::IdRef(id) if depth > 0 => format!("IdRef({id}: {})", describe_value_bounded(ctx, *id, depth - 1, seen)),
+            Operand::IdRef(id) => format!("IdRef({id})"),
             _ => format!("{operand:?}"),
         })
         .collect::<Vec<_>>()

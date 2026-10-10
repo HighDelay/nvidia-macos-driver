@@ -71,8 +71,11 @@ pub(in crate::passes) fn lower_write(
                 t
             }
             _ => {
+                let ty = value_result_type(ctx, texel);
+                let ty_def = ty.and_then(|t| crate::passes::value_queries::type_def_of(ctx, t)).map(|d| format!("{:?} {:?}", d.class.opcode, d.operands));
+                let elem_def = vector_shape(ctx, texel).and_then(|(e, _)| crate::passes::value_queries::type_def_of(ctx, e)).map(|d| format!("{:?} {:?}", d.class.opcode, d.operands));
                 return Err(format!(
-                    "air.write_texture: unsupported texel shape id {texel} ({})",
+                    "air.write_texture: unsupported texel shape id {texel} type {ty:?} = {ty_def:?} elem {elem_def:?} ({})",
                     describe_value(ctx, texel)
                 ));
             }
