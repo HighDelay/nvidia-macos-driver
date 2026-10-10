@@ -148,6 +148,7 @@ $("uw").onclick = () => { U.pick = {}; U.off = new Set(); post({ act: "usbStart"
 $("uwr").onclick = () => { $("uerr").textContent = ""; post({ act: "usbStop" }); post({ act: "usbWrite", sel: U.pick, efi: efi() }); };
 $("mk").onclick = () => post({ act: "crashReport" });
 $("sl").onclick = () => { $("sl").disabled = true; $("slr").textContent = "Collecting and sending..."; post({ act: "sendLogs" }); };
+$("fl").onclick = () => { $("sl").disabled = true; $("fl").disabled = true; $("slr").textContent = "Recording the display for 20 seconds, then sending..."; post({ act: "sendLogs", sample: "flicker" }); };
 $("od").onclick = () => post({ act: "optionalDiagnostics" });
 $("dr").onclick = () => post({ act: "importDiagnosticReceipt" });
 $("up").onclick = () => post({ act: "open", url: "https://nullmothsystems.com/#send" });
@@ -168,7 +169,7 @@ NM.on = (m) => {
   if (m.event === "logsStatus") { $("slr").textContent = m.data.text; return; }
   if (m.event === "logsDone") {
     const d = m.data;
-    $("sl").disabled = false;
+    $("sl").disabled = false; $("fl").disabled = false;
     $("slr").innerHTML = d.ok ? `<span class="good">Sent. Report ID ${esc(d.ids.join(", "))}</span> - quote it when you ask for help.` + (d.errors.length ? `<br><span class="warn">Not sent: ${esc(d.errors.join("; "))}</span>` : "")
                               : `<span class="warn">${esc(d.why || ("Nothing was sent: " + (d.errors || []).join("; ")))}</span>`;
     if (d.localPath) $("slr").innerHTML += "<br>Report files are saved locally. Open Logs to find them or retry Send logs.";

@@ -106,6 +106,26 @@ if [ -n "$COLLECT" ]; then
   # copies files and prints state, and unmounts any EFI partition it mounted. Every OpenCore partition is checked,
   # sticks included, for OpenCore's own log (opencore-*.txt) and macOS panics it saved (panic-*.txt).
   mkdir -p "$COLLECT" || { echo "RESULT stop"; exit 1; }
+  # "Record flicker": 20 s of display timing taken while the user sees the flicker, before anything else runs. The
+  # accelerator's zero-copy flip counters and the framebuffer's commit/flip properties every 0.25 s, the driver's
+  # kernel messages, WindowServer's CPU and the refresh rate. Flicker never shows on a 60 Hz single-display test Mac,
+  # so the users' own machines are the measurement.
+  if [ "${NULLMOTH_SAMPLE:-}" = flicker ]; then
+    { echo "== display timing sample, $(date -u +%Y-%m-%dT%H:%M:%SZ), 20 s at 0.25 s"
+      system_profiler SPDisplaysDataType 2>/dev/null | grep -E "Resolution|Refresh|UI Looks|Display Type|Connection Type|Online"
+      /usr/bin/log stream --style compact --predicate 'sender == "NVRMFB" OR sender == "NVRM" OR sender == "NVAccel"' > "$COLLECT/.flicker-kmsg" 2>&1 &
+      lp=$!
+      i=0; while [ $i -lt 80 ]; do
+        echo "-- t=$(( i * 250 ))ms"
+        sysctl debug 2>/dev/null | grep -E "nvaccel_(iop|flip|vbl|swap|present|async|crc)|nvrmfb" | tr '\n' ' '; echo
+        ioreg -r -c NVRMNVDAFramebuffer -d 1 2>/dev/null | grep -E '"NVRM(RejectedCommits|Flip|Vbl|Present)|"IOFBCurrentPixelClock' | tr -s ' ' | tr '\n' ' '; echo
+        ps -A -o %cpu=,comm= 2>/dev/null | grep -E "WindowServer$" | head -1
+        sleep 0.25; i=$((i + 1))
+      done
+      kill "$lp" 2>/dev/null; wait "$lp" 2>/dev/null
+      echo; echo "== driver kernel messages during the sample"; tail -c 200000 "$COLLECT/.flicker-kmsg"; rm -f "$COLLECT/.flicker-kmsg"
+    } > "$COLLECT/display-flicker-sample.txt" 2>&1
+  fi
   for f in "$ST"/*.log "$ST/state"; do [ -f "$f" ] && cp "$f" "$COLLECT/driver-$(basename "$f").txt"; done
   { echo "macOS $(sw_vers -productVersion) ($(sw_vers -buildVersion))   model $(sysctl -n hw.model)"
     echo "boot-args: $(nvram boot-args 2>/dev/null | cut -f2-)"; echo "SIP: $(csrutil status 2>/dev/null)"

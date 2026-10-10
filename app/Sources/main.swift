@@ -392,7 +392,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         case "usbStop": usbWatch(false)
         case "usbWrite": usbWrite(b["sel"] as? [String: [String: Int]] ?? [:], efi: b["efi"] as? String ?? "auto")
         case "crashReport": crashReportFromWindow()
-        case "sendLogs": sendLogs()
+        case "sendLogs": sendLogs(sample: b["sample"] as? String ?? "")
         case "optionalDiagnostics": optionalDiagnostics()
         case "importDiagnosticReceipt": importDiagnosticReceipt()
         case "verbose": run(mode: "verbose", pkg: "", efi: b["efi"] as? String ?? "auto", extra: ["--verbose", (b["on"] as? Bool ?? false) ? "on" : "off"])
@@ -641,10 +641,16 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
     // report when the driver crashed, and - after macOS asks for the password - OpenCore's boot logs and saved panics
     // from every OpenCore partition (sticks included). Every file is uploaded with its SHA-256, and the site refuses
     // any upload whose bytes differ from it.
-    func sendLogs() {
+    // sample: "" = the ordinary logs; "flicker" = first 20 s of display timing taken while the screen flickers.
+    // It rides the same collector, consent and upload as Send logs.
+    func sendLogs(sample: String = "") {
+        guard ["", "flicker"].contains(sample) else { return }
         let a = NSAlert()
-        a.messageText = "Send logs to NullMoth"
+        a.messageText = sample == "flicker" ? "Record the flicker and send it to NullMoth" : "Send logs to NullMoth"
         a.informativeText = "1401 is sending this Mac's NullMoth logs to nullmothsystems.com so the problem can be found and fixed: what 1401 did, the driver's state, driver crash reports, recent WindowServer, Firefox and Blender crash reports, update diagnostics, OpenCore's startup logs, and a numeric device/CPU relationship map. A separately imported diagnostics receipt is included only if that session allowed upload, and only as a validated count/configuration summary. The map records kernel-visible hardware, not verified driver support. Your name, your Mac's name, serial numbers and addresses are removed first. macOS asks for your password so 1401 can read the startup logs."
+        if sample == "flicker" {
+            a.informativeText = "Start this while the screen is flickering. For 20 seconds 1401 records how the driver puts frames on the display (flip counts and timing, refused updates, the refresh rate and WindowServer's load), then sends it with the ordinary logs. Keep using the Mac normally while it records.\n\n" + a.informativeText
+        }
         a.addButton(withTitle: "Send"); a.addButton(withTitle: "Cancel")
         guard a.runModal() == .alertFirstButtonReturn else { send("logsDone", ["ok": false, "why": "Not sent."]); return }
         DispatchQueue.global().async {
@@ -659,7 +665,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
             }
             let script = Bundle.main.resourceURL!.appendingPathComponent("nullmoth-log-capture.sh").path
             let q = { (x: String) in "'" + x.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-            let cmd = "/bin/bash \(q(script))"
+            let cmd = (sample.isEmpty ? "" : "NULLMOTH_SAMPLE=\(sample) ") + "/bin/bash \(q(script))"
             var collectionErrors: [String] = []
             DispatchQueue.main.async {
                 self.send("logsStatus", ["text": "Waiting for your Mac password (a macOS window asks for it). Collecting takes a few minutes; 1401 keeps working."])
