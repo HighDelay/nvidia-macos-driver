@@ -696,18 +696,55 @@ ok "boot picker way back armed (NullMoth: Remove driver)"
 # This is a stopgap; the real fix is the boot->WindowServer surface/vblank handoff, chased with a >60 Hz/2nd display.
 cat > /Library/NullMoth/nullmoth-wsreset.sh <<'WS'
 #!/bin/bash
+# Flicker stopgap + evidence: the first WindowServer of a boot composes against the driver's boot handoff and strobes
+# for many; a restart clears it. We capture the display/driver state the flickering WindowServer leaves behind, restart
+# WindowServer once, then capture the clean state. The before/after lands in wsreset.log, which "Send logs" uploads, so
+# the strobe can be root-caused from a real >60 Hz / multi-monitor machine (it does not reproduce on the dev box).
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 [ -e /Library/NullMoth/no-wsreset ] && exit 0
 MARK=/var/run/nullmoth-wsreset.done
 [ -e "$MARK" ] && exit 0
 kextstat 2>/dev/null | grep -q com.nullmoth.NVAccel || exit 0
 nvram 7C436110-AB2A-4BBB-A880-FE41995C9F82:nullmoth-remove >/dev/null 2>&1 && exit 0
+LOG=/Library/NullMoth/wsreset.log
+capture() {
+  { echo "===== $1 $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
+    echo "WindowServer: pid $(pgrep -x WindowServer | tr '\n' ' ')  uptime $(ps -o etime= -p "$(pgrep -x WindowServer | head -1)" 2>/dev/null | tr -d ' ')"
+    # current refresh per framebuffer, straight from the registry (pixelClock / pixelCount = Hz) - never ages out, so it
+    # always shows the >60 Hz / multi-monitor condition even if the boot log lines have scrolled off
+    echo "-- current mode per framebuffer (fb: WxH? pclk/total = Hz) --"
+    ioreg -r -c NVRMNVDAFramebuffer -w0 2>/dev/null | /usr/bin/awk '
+      /"IOFBDependentIndex" =/    { if (match($0, /= [0-9]+/)) idx = substr($0, RSTART+2, RLENGTH-2) }
+      /"IOFBCurrentPixelCount" =/ { if (match($0, /= [0-9]+/)) cnt = substr($0, RSTART+2, RLENGTH-2) }
+      /"IOFBCurrentPixelClock" =/ { if (match($0, /= [0-9]+/)) { clk = substr($0, RSTART+2, RLENGTH-2);
+        if (cnt+0 > 0) printf "   fb%s: %.2f Hz (pclk %s / total %s)\n", idx, clk/cnt, clk, cnt; cnt="" } }'
+    # displays, their mode, heads and connectors, from the fb boot log (wide window: the daemon runs seconds after boot)
+    echo "-- displays / heads (newest first) --"
+    log show --last 15m --style compact --predicate 'process == "kernel" AND eventMessage CONTAINS "NVRM-fb"' 2>/dev/null \
+      | grep -aE 'ENUMERATED|dpy [0-9]|head [0-9].*mode|connected [0-9].*edid|boot pair|hw vblank|TAKEOVER|SHUTDOWN|refresh rate from NVKMS' \
+      | tail -24 | sed 's/^[0-9-]* //'
+    # flip / vblank / modeset activity = what strobes; drop the once-a-minute keepalive noise
+    echo "-- flip / vblank / modeset (last 90s) --"
+    log show --last 90s --style compact --predicate 'process == "kernel" AND (eventMessage CONTAINS "NVRM-fb" OR eventMessage CONTAINS "nvkms")' 2>/dev/null \
+      | grep -aviE 'kapi event type 5|sample [0-9]' | grep -aiE 'flip|vbl|modeset|present|home|reflip|commit|latch|head' | tail -30 | sed 's/^[0-9-]* //'
+    # the driver's own in-registry trace + any counters it publishes
+    echo "-- NVRMFB registry --"
+    ioreg -r -c NVRMNVDAFramebuffer -w0 2>/dev/null | grep -oaE '"(NVRMTrace|NVRMTraceCount|reflips|fVblCalls|fBarPaints)" = [^,}]{0,400}' | tail -8
+    echo
+  } >> "$LOG" 2>&1
+}
+# keep the log to the last few boots
+[ -f "$LOG" ] && tail -c 262144 "$LOG" > "$LOG.keep" 2>/dev/null && mv "$LOG.keep" "$LOG"
 for i in $(seq 1 40); do pgrep -x WindowServer >/dev/null 2>&1 && break; sleep 1; done
 pgrep -x WindowServer >/dev/null 2>&1 || exit 0
-sleep 6
+sleep 8   # let the first WindowServer settle into the (possibly flickering) steady state before we photograph it
+capture "BEFORE restart"
 : > "$MARK"   # claim the single shot BEFORE touching WindowServer, so a respawn can never loop
 P=$(pgrep -x WindowServer); [ -n "$P" ] && { kill -TERM $P 2>/dev/null; sleep 2; pgrep -x WindowServer >/dev/null 2>&1 && kill -9 $P 2>/dev/null; }
-echo "$(date) restarted WindowServer once (flicker stopgap)" >> /Library/NullMoth/wsreset.log 2>&1
+for i in $(seq 1 30); do pgrep -x WindowServer >/dev/null 2>&1 && break; sleep 1; done
+sleep 8
+capture "AFTER restart (should be clean)"
+echo "$(date) restarted WindowServer once; before/after captured above" >> "$LOG" 2>&1
 WS
 chmod 755 /Library/NullMoth/nullmoth-wsreset.sh; chown root:wheel /Library/NullMoth/nullmoth-wsreset.sh
 cat > /Library/LaunchDaemons/com.nullmoth.wsreset.plist <<'PL'
