@@ -382,6 +382,22 @@ else
         for d in $match; do [ "$d" = "$esp" ] && { found=$d; BOOT_BOUND=1; ok "OpenCore started this Mac from $d (on the macOS disk; the copy on$(echo " $match" | sed "s/ $d//") sets the same serial)"; }; done
       fi
     fi
+    # Still two or more (user reports 10-10, Mac 1.5 and 1.6: disk0s1 + disk2s1, neither config's serial matched): OpenCore
+    # deletes and rewrites boot-args from its config at every start (NVRAM > Delete + Add), so the running boot-args are
+    # the started config's own, word for word. A candidate whose config sets exactly these boot-args and this Mac's model
+    # is the one that started it - when only one does.
+    if [ "$BOOT_BOUND" != 1 ]; then
+      live=$(nvram boot-args 2>/dev/null | cut -f2-); model=$(sysctl -n hw.model); match=""
+      if [ -n "$live" ]; then
+        for d in $found; do mount_efi "$d" || continue; mp=$MOUNT_POINT; rel=$(ocrel_in "$mp"); c="$mp/$rel/config.plist"
+          a=$(plutil -extract NVRAM.Add.7C436110-AB2A-4BBB-A880-FE41995C9F82.boot-args raw -o - "$c" 2>/dev/null)
+          m=$(plutil -extract PlatformInfo.Generic.SystemProductName raw -o - "$c" 2>/dev/null)
+          [ "$a" = "$live" ] && [ "$m" = "$model" ] && match="$match $d"; done
+      fi
+      if [ "$(echo $match | wc -w | tr -d ' ')" = 1 ]; then
+        found=${match# }; BOOT_BOUND=1; ok "OpenCore started this Mac from $found (its config sets exactly this boot's boot-args and model)"
+      fi
+    fi
     if [ "$BOOT_BOUND" != 1 ]; then
       for d in $found; do echo "NOTE candidate $d"; done
       stop "OpenCore's startup partition could not be confirmed - select the partition this Mac started from"
