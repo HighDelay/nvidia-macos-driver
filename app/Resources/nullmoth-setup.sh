@@ -720,16 +720,16 @@ capture() {
         if (cnt+0 > 0) printf "   fb%s: %.2f Hz (pclk %s / total %s)\n", idx, clk/cnt, clk, cnt; cnt="" } }'
     # displays, their mode, heads and connectors, from the fb boot log (wide window: the daemon runs seconds after boot)
     echo "-- displays / heads (newest first) --"
-    log show --last 15m --style compact --predicate 'process == "kernel" AND eventMessage CONTAINS "NVRM-fb"' 2>/dev/null \
+    log show --start "$SINCE" --style compact --predicate 'process == "kernel" AND eventMessage CONTAINS "NVRM-fb"' 2>/dev/null \
       | grep -aE 'ENUMERATED|dpy [0-9]|head [0-9].*mode|connected [0-9].*edid|boot pair|hw vblank|TAKEOVER|SHUTDOWN|refresh rate from NVKMS' \
-      | tail -24 | sed 's/^[0-9-]* //'
+      | uniq | tail -24 | sed 's/^[0-9-]* //'
     # flip / vblank / modeset activity = what strobes; drop the once-a-minute keepalive noise
     echo "-- flip / vblank / modeset (last 90s) --"
-    log show --last 90s --style compact --predicate 'process == "kernel" AND (eventMessage CONTAINS "NVRM-fb" OR eventMessage CONTAINS "nvkms")' 2>/dev/null \
-      | grep -aviE 'kapi event type 5|sample [0-9]' | grep -aiE 'flip|vbl|modeset|present|home|reflip|commit|latch|head' | tail -30 | sed 's/^[0-9-]* //'
+    log show --start "$SINCE" --style compact --predicate 'process == "kernel" AND (eventMessage CONTAINS "NVRM-fb" OR eventMessage CONTAINS "nvkms")' 2>/dev/null \
+      | grep -aviE 'kapi event type 5|sample [0-9]' | grep -aiE 'flip|vbl|modeset|present|home|reflip|commit|latch|head' | uniq -c | tail -30 | sed 's/^[0-9-]* //'
     # the driver's own in-registry trace + any counters it publishes
     echo "-- NVRMFB registry --"
-    ioreg -r -c NVRMNVDAFramebuffer -w0 2>/dev/null | grep -oaE '"(NVRMTrace|NVRMTraceCount|reflips|fVblCalls|fBarPaints)" = [^,}]{0,400}' | tail -8
+    ioreg -r -c NVRMNVDAFramebuffer -w0 2>/dev/null | grep -oaE '"(NVRMTrace|NVRMTraceCount|reflips|fVblCalls|fBarPaints)" = [^,}]{0,200}' | tail -8
     echo
   } >> "$LOG" 2>&1
 }
@@ -738,7 +738,9 @@ capture() {
 for i in $(seq 1 40); do pgrep -x WindowServer >/dev/null 2>&1 && break; sleep 1; done
 pgrep -x WindowServer >/dev/null 2>&1 || exit 0
 sleep 8   # let the first WindowServer settle into the (possibly flickering) steady state before we photograph it
+SINCE=$(date -r "$(sysctl -n kern.boottime | sed -E 's/.*\{ sec = ([0-9]+),.*/\1/')" '+%Y-%m-%d %H:%M:%S')
 capture "BEFORE restart"
+SINCE=$(date '+%Y-%m-%d %H:%M:%S')
 : > "$MARK"   # claim the single shot BEFORE touching WindowServer, so a respawn can never loop
 P=$(pgrep -x WindowServer); [ -n "$P" ] && { kill -TERM $P 2>/dev/null; sleep 2; pgrep -x WindowServer >/dev/null 2>&1 && kill -9 $P 2>/dev/null; }
 for i in $(seq 1 30); do pgrep -x WindowServer >/dev/null 2>&1 && break; sleep 1; done
