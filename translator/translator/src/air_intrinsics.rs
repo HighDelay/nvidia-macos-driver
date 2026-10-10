@@ -696,6 +696,8 @@ pub fn air_intrinsic_disposition(name: &str) -> Option<AirIntrinsicDisposition> 
             "air.get_local_id",
             "air.get_group_id",
             "air.get_num_groups",
+            "air.get_local_size",
+            "air.get_global_size",
             "air.clamp",
             "air.saturate",
         ],

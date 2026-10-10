@@ -395,6 +395,7 @@ static NSArray *nvmtl_gl_cl_bindings(NSString *ll) {
         NSString *t = [b substringFromIndex:NSMaxRange(r)]; NSRange q = [t rangeOfString:@"\""]; return q.location == NSNotFound ? nil : [t substringToIndex:q.location]; };
     for (NSString *a in [argList componentsSeparatedByString:@", "]) {
         NSString *b = md[[a substringFromIndex:1]]; if (!b) continue;
+        if (getenv("NVMTL_CL_REFL_TRACE")) nvlog("GL: OpenCL argument metadata: %s", b.UTF8String);
         BOOL buf = [b rangeOfString:@"!\"air.buffer\""].location != NSNotFound, cst = [b rangeOfString:@"!\"air.constant\""].location != NSNotFound;
         if ([b rangeOfString:@"!\"air.texture\""].location != NSNotFound) {
             NVMTLGLTexBinding *t = [NVMTLGLTexBinding new]; t->_name = str(b, @"air.arg_name") ?: @"";
@@ -407,9 +408,12 @@ static NSArray *nvmtl_gl_cl_bindings(NSString *ll) {
                       : [tn hasPrefix:@"texture_buffer"] ? MTLTextureTypeTextureBuffer : MTLTextureType2D;
             [out addObject:t]; continue;
         }
-        if (!buf && !cst) continue;
+        if (!buf && !cst) { nvlog("GL: OpenCL argument not reflected: %s", b.UTF8String); continue; }
         NVMTLGLBinding *x = [NVMTLGLBinding new];
-        x->_name = str(b, @"air.arg_name") ?: @""; x->_type = cst ? (MTLBindingType)22 : MTLBindingTypeBuffer;
+        // an OpenCL __local pointer is an air.buffer in address space 3: OpenCL sets it with a size and no cl_mem, and
+        // refused it as a buffer (CL_INVALID_ARG_SIZE) until it was reflected as threadgroup memory
+        x->_name = str(b, @"air.arg_name") ?: @"";
+        x->_type = cst ? (MTLBindingType)22 : num(b, @"air.address_space") == 3 ? MTLBindingTypeThreadgroupMemory : MTLBindingTypeBuffer;
         x->_access = [b rangeOfString:@"!\"air.read_write\""].location != NSNotFound ? MTLBindingAccessReadWrite
                    : [b rangeOfString:@"!\"air.write\""].location != NSNotFound ? MTLBindingAccessWriteOnly : MTLBindingAccessReadOnly;
         NSInteger li = num(b, @"air.location_index"); x->_index = li >= 0 ? (NSUInteger)li : 0;
@@ -422,7 +426,13 @@ static NSArray *nvmtl_gl_cl_bindings(NSString *ll) {
 }
 @implementation NVMTLFunction (NVMTLGLRefl)
 - (id)reflectionWithOptions:(NSUInteger)o {
-    if (_spirv || ![_air containsString:@"\"air.constant\""]) return nil;
+    // Apple's OpenCL builds its argument table from this reflection (GLDComputeProgramRec::buildComputeProgram reads
+    // reflectionWithOptions: -> arguments). It answered nil whenever the function already had SPIR-V - which is always,
+    // since library entries translate when they are made - or had no air.constant argument, so OpenCL saw 0 arguments:
+    // every clSetKernelArg returned -49 and Geekbench's OpenCL run stopped at its first workload (studio, 10-10).
+    if (getenv("NVMTL_CL_REFL_TRACE")) nvlog("GL: reflectionWithOptions: %s options 0x%lx spirv %lu B air %lu B kernel-list %d", _fname.UTF8String, (unsigned long)o, (unsigned long)_spirv.length, (unsigned long)_air.length, [_air containsString:@"!air.kernel"]);
+    // A kernel is translated when its library entry is made, so _spirv is always set by now; only the AIR decides.
+    if (!_air.length || ![_air containsString:@"!air.kernel"]) return nil;
     NSArray *args = nvmtl_gl_cl_bindings(_air);
     if (!args) { nvlog("GL: reflectionWithOptions: %s - no air.kernel argument list in its AIR", _fname.UTF8String); return nil; }
     NVMTLGLFunctionReflection *r = [NVMTLGLFunctionReflection new]; r->_args = args;

@@ -1437,6 +1437,9 @@ pub(in crate::passes) fn lower_one(
     if let Some(builtin) = cl_work_item_builtin(name) {
         return lower_cl_work_item(ctx, name, builtin, res, rty, args);
     }
+    if let Some(global) = cl_size_query(name) {
+        return lower_cl_size(ctx, name, global, res, rty, args);
+    }
     if name == "air.get_sample_position.v2f32" {
         return lower_sample_position(ctx, res, rty, args);
     }
@@ -1678,6 +1681,92 @@ fn cl_work_item_builtin(name: &str) -> Option<BuiltIn> {
         "get_num_groups" => Some(BuiltIn::NumWorkgroups),
         _ => None,
     }
+}
+
+// OpenCL get_local_size / get_global_size (Apple's OpenCL hands its kernels to the Metal driver as AIR). Geekbench 6's
+// OpenCL run stopped at its first workload: gemm and softmax kernels use get_local_size, the translation failed, and
+// clSetKernelArg returned CL_INVALID_ARG_INDEX (-49) for a kernel that had no function. The local size is the pipeline's
+// WorkgroupSize (the same spec constants [[threads_per_threadgroup]] reads); the global size is groups x local size.
+fn cl_size_query(name: &str) -> Option<bool> {
+    match name {
+        "air.get_local_size.i32" => Some(false),
+        "air.get_global_size.i32" => Some(true),
+        _ => None,
+    }
+}
+
+fn lower_cl_size(
+    ctx: &mut Ctx,
+    name: &str,
+    global: bool,
+    res: Option<Word>,
+    rty: Option<Word>,
+    args: &[Word],
+) -> Result<Vec<Instruction>, String> {
+    let (Some(res), Some(rty), Some(&dim)) = (res, rty, args.first()) else {
+        return Err(format!("{name}: expected one dimension operand and a result"));
+    };
+    let uint = ctx.ty_uint();
+    let v3 = ctx.ty_vec_uint(3);
+    let size = ctx.kernel_workgroup_size_id();
+    let mut insts = Vec::new();
+    let vector = if global {
+        let groups = match existing_builtin_input_var(ctx, BuiltIn::NumWorkgroups, v3) {
+            Some(var) => var,
+            None => {
+                let ptr_ty = ctx.ty_ptr(StorageClass::Input, v3);
+                let var = ctx.module.fresh_id();
+                ctx.new_globals.push(Instruction::new(
+                    Op::Variable,
+                    Some(ptr_ty),
+                    Some(var),
+                    vec![Operand::StorageClass(StorageClass::Input)],
+                ));
+                ctx.module.annotations.push(Instruction::new(
+                    Op::Decorate,
+                    None,
+                    None,
+                    vec![
+                        Operand::IdRef(var),
+                        Operand::Decoration(Decoration::BuiltIn),
+                        Operand::BuiltIn(BuiltIn::NumWorkgroups),
+                    ],
+                ));
+                ctx.interface.push(var);
+                var
+            }
+        };
+        let loaded = ctx.module.fresh_id();
+        insts.push(Instruction::new(Op::Load, Some(v3), Some(loaded), vec![Operand::IdRef(groups)]));
+        let product = ctx.module.fresh_id();
+        insts.push(Instruction::new(
+            Op::IMul,
+            Some(v3),
+            Some(product),
+            vec![Operand::IdRef(loaded), Operand::IdRef(size)],
+        ));
+        product
+    } else {
+        size
+    };
+    if rty == uint {
+        insts.push(Instruction::new(
+            Op::VectorExtractDynamic,
+            Some(rty),
+            Some(res),
+            vec![Operand::IdRef(vector), Operand::IdRef(dim)],
+        ));
+    } else {
+        let lane = ctx.module.fresh_id();
+        insts.push(Instruction::new(
+            Op::VectorExtractDynamic,
+            Some(uint),
+            Some(lane),
+            vec![Operand::IdRef(vector), Operand::IdRef(dim)],
+        ));
+        insts.push(Instruction::new(Op::Bitcast, Some(rty), Some(res), vec![Operand::IdRef(lane)]));
+    }
+    Ok(insts)
 }
 
 fn lower_cl_work_item(
