@@ -97,7 +97,20 @@ pub extern "C" fn nvmtl_translate(
             std::mem::forget(b);
             0
         }
-        Err(e) => { set_err(&e); -1 }
+        Err(e) => { dump_failed(ll, st, &e); set_err(&e); -1 }
+    }
+}
+
+// A kernel that fails inside an app (Geekbench's OpenCL convolve) cannot be reproduced offline without its AIR.
+// NVMTL_DUMP_FAILED_DIR=<dir> writes the input and the error beside it; unset, this costs one env read on failure only.
+fn dump_failed(ll: &str, st: Stage, e: &str) {
+    let Some(dir) = std::env::var_os("NVMTL_DUMP_FAILED_DIR") else { return };
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    ll.hash(&mut h);
+    let base = std::path::Path::new(&dir).join(format!("{:016x}-{:?}", h.finish(), st));
+    if let Err(w) = std::fs::write(base.with_extension("ll"), ll).and_then(|_| std::fs::write(base.with_extension("err"), e)) {
+        eprintln!("nvmtl_translate: NVMTL_DUMP_FAILED_DIR write failed: {w}");
     }
 }
 
