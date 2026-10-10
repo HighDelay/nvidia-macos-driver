@@ -195,7 +195,21 @@ if [ -n "$COLLECT" ]; then
     mount_efi "$d" || continue; mp=$MOUNT_POINT
     collect_recent_logs "$d" 3 "$mp"/opencore-*.txt
     collect_recent_logs "$d" 5 "$mp"/panic-*.txt
+    # The EFI itself (10-09): most machines that fail run their own OpenCore config, and without it every fix was a
+    # guess from symptoms. The config goes up with the machine's identity removed (serial, board serial, UUID, ROM),
+    # plus the list of kexts, drivers and ACPI files beside it, so the working and the broken EFIs can be compared.
+    for cf in "$mp"/EFI/OC/config.plist "$mp"/EFI/OC/config.plist.nullmoth-*; do
+      [ -f "$cf" ] || continue
+      out="$COLLECT/$d-efi-$(basename "$cf").txt"
+      cp "$cf" "$out.plist" || { collection_errors=$((collection_errors+1)); continue; }
+      for k in SystemSerialNumber MLB SystemUUID ROM; do plutil -remove "PlatformInfo.Generic.$k" "$out.plist" >/dev/null 2>&1; done
+      plutil -convert xml1 -o "$out" "$out.plist" 2>/dev/null || mv "$out.plist" "$out"; rm -f "$out.plist"
+      n=$((n+1))
+    done
+    [ -d "$mp/EFI/OC" ] && { echo "== $d EFI/OC"; (cd "$mp/EFI/OC" && ls -1 Kexts Drivers ACPI Tools 2>/dev/null; ls -la OpenCore.efi 2>/dev/null); } >> "$COLLECT/$d-efi-files.txt"
   done
+  { echo; echo "== NullMoth NVRAM flags (a remove flag that survives every boot removes the driver at login)"
+    nvram 7C436110-AB2A-4BBB-A880-FE41995C9F82:nullmoth-remove 2>&1; } >> "$COLLECT/driver-state.txt"
   chmod -R a+rX "$COLLECT"; ok "collected driver state and $n diagnostic log(s)"; cleanup
   if [ "$collection_errors" -gt 0 ]; then note "$collection_errors diagnostic log(s) could not be copied"; echo "RESULT partial"; exit 1; fi
   echo "RESULT ok"; exit 0
