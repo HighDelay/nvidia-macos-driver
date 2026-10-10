@@ -171,6 +171,15 @@ static bool nvmtl_accel_armed(void)
 }
 #include <dlfcn.h>
 #include <libgen.h>
+// The video libraries tile and untile frames in the Blackwell (GB20x) layout. Earlier GPUs' NVDEC/NVENC use the classic
+// one: on an RTX 3070 Laptop (issue #65, measured against Apple's software codecs) H.264 decode showed shifted macroblock
+// rows and a green stripe, and both encoders produced torn pictures. The decoder's only difference is its untiling mode
+// (1 = Blackwell, 0 = classic), so earlier GPUs load libnvdec_h264_t2d.dylib, the same library with mode 0 (51 dB on
+// GA104). The encoders are not registered on them, so apps use Apple's encoder until they are fixed for those GPUs.
+static bool nvmtl_video_is_blackwell(void)
+{
+    return strstr(nvmtl_vk_device_name(), "NVK GB") != NULL;
+}
 static void nvmtl_nvdec_register(void)
 {
     static dispatch_once_t once;
@@ -185,7 +194,7 @@ static void nvmtl_nvdec_register(void)
         if (!dladdr((const void *)nvmtl_nvdec_register, &di) || !di.dli_fname) { nvlog("nvdec: dladdr failed - not registering"); return; }
         char dir[1024], path[1200];
         strlcpy(dir, di.dli_fname, sizeof dir);
-        snprintf(path, sizeof path, "%s/libnvdec_h264.dylib", dirname(dir));
+        snprintf(path, sizeof path, "%s/%s", dirname(dir), nvmtl_video_is_blackwell() ? "libnvdec_h264.dylib" : "libnvdec_h264_t2d.dylib");
         void *h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
         if (!h) { nvlog("nvdec: dlopen %s FAILED: %s", path, dlerror()); return; }
         void *fac = dlsym(h, "NVDecH264_CreateInstance");
@@ -203,6 +212,7 @@ static void nvmtl_nvenc_register(void)
     dispatch_once(&once, ^{
         const char *me = getprogname();
         if (getenv("NVMTL_NO_NVENC")) { nvlog("nvenc: NVMTL_NO_NVENC set - not registering in %s", me); return; }
+        if (!nvmtl_video_is_blackwell()) { nvlog("nvenc: %s is not Blackwell - H.264 encode stays on Apple's encoder", nvmtl_vk_device_name()); return; }
         if (!strcmp(me, "WindowServer")) return;
         typedef int32_t (*RegFn)(uint32_t, CFDictionaryRef, void *);
         RegFn reg = (RegFn)dlsym(RTLD_DEFAULT, "VTRegisterVideoEncoderWithInfo");
@@ -256,6 +266,7 @@ static void nvmtl_nvenc_hevc_register(void)
     dispatch_once(&once, ^{
         const char *me = getprogname();
         if (getenv("NVMTL_NO_NVENC_HEVC")) { nvlog("nvenc: NVMTL_NO_NVENC_HEVC set - not registering HEVC in %s", me); return; }
+        if (!nvmtl_video_is_blackwell()) { nvlog("nvenc: %s is not Blackwell - HEVC encode stays on Apple's encoder", nvmtl_vk_device_name()); return; }
         if (!strcmp(me, "WindowServer")) return;
         typedef int32_t (*RegFn)(uint32_t, CFDictionaryRef, void *);
         RegFn reg = (RegFn)dlsym(RTLD_DEFAULT, "VTRegisterVideoEncoderWithInfo");
