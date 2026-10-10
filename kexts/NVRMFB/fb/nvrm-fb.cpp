@@ -141,7 +141,8 @@ class NVRMNVDAFramebuffer : public IOFramebuffer {
     static inline volatile SInt32 sFlipLatched[8] = {};
     bool flipToMemory(struct NvKmsKapiMemory *mem, unsigned w, unsigned h, unsigned pitch, int *rcOut, bool pure = false, UInt64 cookie = 0);
     bool fSubmissionSeen = false, fSubmissionFaulted = false;
-    NvBool submitConfig(struct NvKmsKapiRequestedModeSetConfig *cfg, struct NvKmsKapiModeSetReplyConfig *rep, NvBool commit, bool bootstrap = false);
+    NvBool submitConfig(struct NvKmsKapiRequestedModeSetConfig *cfg, struct NvKmsKapiModeSetReplyConfig *rep, NvBool commit,
+                        bool bootstrap = false, bool cursorOnly = false);
     thread_call_t fReflip = nullptr;
     unsigned fReflips = 0; int fReflipRc = -99;
     unsigned fVblReg = 0;
@@ -852,10 +853,17 @@ static IORecursiveLock *startLock()
     return gL;
 }
 NvBool NVRMNVDAFramebuffer::submitConfig(struct NvKmsKapiRequestedModeSetConfig *cfg,
-                                            struct NvKmsKapiModeSetReplyConfig *rep, NvBool commit, bool bootstrap)
+                                            struct NvKmsKapiModeSetReplyConfig *rep, NvBool commit, bool bootstrap,
+                                            bool cursorOnly)
 {
     if (!fKms || !fDev || !cfg || !rep || fHead >= 8 || fSubmissionFaulted) return NV_FALSE;
     if (!commit) return fKms->applyModeSetConfig(fDev, cfg, rep, NV_FALSE);
+    // A cursor-only request leaves the primary layer alone: KAPI does not advance the primary layer's completion slot
+    // for it, so there is no primary flip to wait for and the primary tracking below stays as the last present left it.
+    if (cursorOnly) {
+        const NvBool ok = fKms->applyModeSetConfig(fDev, cfg, rep, NV_TRUE);
+        return ok && rep->flipResult == NV_KMS_FLIP_RESULT_SUCCESS;
+    }
     if (fSubmissionSeen) {
         // Initial console acceptance is asynchronous. A still-pending prior flip
         // must receive the same bounded completion wait as a newly committed flip.
@@ -1067,16 +1075,17 @@ bool NVRMNVDAFramebuffer::cursorApply()
     cfg->headRequestedConfig[fHead].modeSetConfig.bActive = NV_TRUE;
     cfg->headRequestedConfig[fHead].modeSetConfig.numDisplays = 1;
     cfg->headRequestedConfig[fHead].modeSetConfig.displays[0] = fDisplay;
-    struct NvKmsKapiLayerRequestedConfig *primary = &cfg->headRequestedConfig[fHead].layerRequestedConfig[NVKMS_KAPI_LAYER_PRIMARY_IDX];
-    primary->config.surface = fFrontSurf ? fFrontSurf : fSurf;
-    primary->flags.surfaceChanged = NV_TRUE;
+    // Cursor only. This used to name the primary surface too (fFrontSurf, read here without the zero-copy flip path's
+    // ordering), so every cursor move was also a primary flip: paced to vsync, and when a zero-copy flip latched a newer
+    // frame between that read and this commit, the older frame went back on the panel until the next flip - the flash
+    // users saw on mouse movement once zero-copy scan-out starts, gone with -nvrmnoflip. (Same finding as PR #40.)
     struct NvKmsKapiCursorRequestedConfig *cr = &cfg->headRequestedConfig[fHead].cursorRequestedConfig;
     cr->surface = (fCurVisible && fCurHaveImage) ? fCurSurf : nullptr;
     cr->compParams.compMode    = NVKMS_COMPOSITION_BLENDING_MODE_PREMULT_ALPHA;
     cr->compParams.surfaceAlpha = 0;
     cr->dstX = (NvS16)fCurX; cr->dstY = (NvS16)fCurY;
     cr->flags.surfaceChanged = NV_TRUE; cr->flags.dstXYChanged = NV_TRUE;
-    NvBool ok = submitConfig(cfg, rep, NV_TRUE);
+    NvBool ok = submitConfig(cfg, rep, NV_TRUE, false, true);
     fCurRc = ok ? (int)rep->flipResult : -1;
     if (fCurApplies < 3 || (fCurApplies % 1000) == 0)
         FBLOG("cursor apply %u: ok %u rc %d at %d,%d visible %u",
