@@ -1,0 +1,17 @@
+name: It works on my machine
+description: Tell us a machine that reached the desktop, so 1401 sets it up the same way for everyone with it.
+title: "[Works] <CPU> + <GPU> + <board or laptop>"
+labels: [works]
+body:
+  - type: input
+    id: report
+    attributes:
+      label: Send logs report ID from the working Mac
+      placeholder: NM-
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything you had to do that 1401 did not do for you
+      description: BIOS settings, boot-args, kexts. This is what we build into 1401 next.

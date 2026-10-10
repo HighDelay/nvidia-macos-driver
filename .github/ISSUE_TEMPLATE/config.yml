@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Every known problem and what to do
+    url: https://nullmothsystems.com/help
+    about: Check here first - most problems have a one-step fix.
+  - name: Send logs without opening an issue
+    url: https://nullmothsystems.com/#send
+    about: Upload logs from a PC or Mac that cannot run the apps.

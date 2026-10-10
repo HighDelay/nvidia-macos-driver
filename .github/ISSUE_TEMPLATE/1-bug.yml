@@ -1,0 +1,50 @@
+name: Something is broken
+description: Boot stops, black screen, flicker, an app crashes, or something else does not work.
+title: "[Bug] <what happens>"
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **First press Send logs** (1401 on Windows, or the 1401 Mac app). It sends your hardware, BIOS settings, OpenCore config and logs, with your name and serial numbers removed, and gives you a report ID. Flicker? Use **Record the flicker** in the Mac app while it happens.
+  - type: input
+    id: report
+    attributes:
+      label: Send logs report ID
+      description: Looks like NM-ABCD1234. Several are fine, separated by commas.
+      placeholder: NM-
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Where does it go wrong?
+      options:
+        - Building or writing the USB stick (1401 on Windows)
+        - Before the OpenCore picker / no picker
+        - After picking the installer (Apple logo, prohibited sign, text stops)
+        - During the macOS install
+        - Installing the NVIDIA driver (Mac app)
+        - Booting macOS after the driver (black / grey screen, restarts)
+        - On the desktop (flicker, lag, displays, sleep)
+        - An app or game
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: What you see, and the last line on screen if it stops. A photo of the screen helps.
+    validations:
+      required: true
+  - type: input
+    id: app
+    attributes:
+      label: App or game (if it is one)
+      placeholder: name and version
+  - type: textarea
+    id: changed
+    attributes:
+      label: Did you change anything yourself?
+      description: Extra boot-args, kexts or settings from a guide, a forum, an AI assistant or someone else's EFI. "No" is a fine answer.

@@ -1,0 +1,11 @@
+name: Feature request
+description: Something the driver or the apps should do.
+title: "[Feature] <what you want>"
+labels: [enhancement]
+body:
+  - type: textarea
+    id: want
+    attributes:
+      label: What should it do, and why does it matter to you?
+    validations:
+      required: true
