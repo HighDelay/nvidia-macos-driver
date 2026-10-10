@@ -554,6 +554,14 @@ if [ -z "$bi" ]; then NEEDBLOCK=1; echo "CHANGE Kernel -> Block: exclude IONDRVS
 elif [ "$(get Kernel.Block.$bi.Enabled)" != true ]; then EDITS+=("Kernel.Block.$bi.Enabled|-bool|true"); echo "CHANGE Kernel -> Block: turn the IONDRVSupport exclude on"; fi
 del=$(plutil -extract NVRAM.Delete.$B xml1 -o - "$C" 2>/dev/null); DELADD=()
 for k in boot-args csr-active-config; do echo "$del" | grep -q "<string>$k</string>" || { DELADD+=("$k"); echo "CHANGE NVRAM Delete: add $k (so OpenCore rewrites it every boot)"; }; done
+# A remove flag still set while installing is stale: installing means the driver is wanted. On some laptops and boards a
+# delete made from macOS never reaches the firmware (user report 10-09: the driver was removed 2 seconds after every
+# login, and "nvram -d" did not help), so the flag came back at every boot, kept the kexts off and ran the removal again.
+# OpenCore writes through the firmware before macOS starts, so it clears the flag there. The picker tool still works on
+# these machines when macOS is chosen in the same picker session, because the tool runs after OpenCore's delete.
+if nvram 7C436110-AB2A-4BBB-A880-FE41995C9F82:nullmoth-remove >/dev/null 2>&1 && ! echo "$del" | grep -q "<string>nullmoth-remove</string>"; then
+  DELADD+=("nullmoth-remove"); echo "CHANGE NVRAM Delete: add nullmoth-remove (a leftover remove flag this Mac cannot clear from macOS)"
+fi
 NEEDTOOL=0; [ -z "$(tool_index)" ] && { NEEDTOOL=1; echo "CHANGE boot picker: add \"$TOOL_NAME\" (the way back if the driver ever stops macOS starting)"; }
 [ ${#EDITS[@]} = 0 ] && [ ${#DELADD[@]} = 0 ] && [ $NEEDTOOL = 0 ] && [ $NEEDBLOCK = 0 ] && ok "OpenCore already has every setting the driver needs"
 
