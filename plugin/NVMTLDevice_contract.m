@@ -37,6 +37,22 @@ static void nvbt(const char *tag, int *count, int max);
     b->_storage = sm;
     b->_ropt = a2 & ((MTLResourceOptions)0xF | ((MTLResourceOptions)0x3 << MTLResourceHazardTrackingModeShift));
     b->_hostDealloc = a3 ? [a3 copy] : nil;
+    // Managed on a discrete GPU means the GPU works on its own copy, synchronized by didModifyRange (CPU -> GPU) and
+    // synchronizeResource (GPU -> CPU). Apple's OpenCL wraps every cl_mem this way; importing the pages zero-copy put
+    // every kernel access across PCIe instead (a 5600x4200 byte-image rotate: 6.6 s per dispatch, Geekbench 6 OpenCL
+    // Horizon Detection hit the 60 s GPU watchdog). The caller's pages become the managed shadow, so contents is still
+    // the caller's pointer, and the GPU side lives in VRAM. Under 1 MiB the transfer outweighs the win (the same
+    // threshold the Shared pair uses), so small buffers stay zero-copy.
+    if (sm == MTLStorageModeManaged && a1 >= (1u << 20) && nvmtl_vk_buffer_import_host(a0, a1, &b->_shadow) == 0) {
+        if (nvmtl_vk_buffer_create(a1, 0, &b->_b) == 0) {
+            [b didModifyRange:NSMakeRange(0, a1)];
+            { static int said; if (!said++) nvlog("newBufferWithBytesNoCopy: managed %lu bytes -> VRAM copy, caller's pages are the shadow", (unsigned long)a1); }
+            return b;
+        }
+        nvlog("newBufferWithBytesNoCopy: managed %lu bytes: VRAM refused - the GPU reads the caller's pages directly", (unsigned long)a1);
+        b->_b = b->_shadow; memset(&b->_shadow, 0, sizeof b->_shadow);
+        return b;
+    }
     if (nvmtl_vk_buffer_import_host(a0, a1, &b->_b) == 0) {
         static int said; if (!said++) nvlog("newBufferWithBytesNoCopy: IMPORTED the caller's pages (%lu bytes at %p) \u2014 zero copy", (unsigned long)a1, a0);
         return b;
