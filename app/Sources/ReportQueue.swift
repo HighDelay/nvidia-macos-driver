@@ -60,7 +60,9 @@ enum ReportQueue {
                 let safeName = String(privateName.unicodeScalars.map { CharacterSet.alphanumerics.contains($0) || "._-".unicodeScalars.contains($0) ? Character($0) : "_" }.prefix(100))
                 let name = safeName.hasSuffix(".txt") || safeName.hasSuffix(".log") ? safeName : safeName + ".txt"
                 let pending = old ? file : try SavedReports.create(bytes, in: session, name: "pending-" + UUID().uuidString + "-" + name)
-                let critical = ["hardware-map", "driver-state", "driver-kernel", "driver-plugin", "crash", "WindowServer", "Firefox", "Blender", "setup-", "collection-errors"].contains { name.contains($0) }
+                // driver-wsreset = the flicker capture (1.4), -efi- = the user's own OpenCore config (1.6): neither reached
+                // the server before 1.7 because 12 slots filled with other files first (10-10: 0 of them in any upload)
+                let critical = ["hardware-map", "driver-state", "driver-kernel", "driver-plugin", "crash", "WindowServer", "Firefox", "Blender", "setup-", "collection-errors", "driver-wsreset", "-efi-"].contains { name.contains($0) }
                 let date = (try? pending.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
                 var original: URL? = old ? nil : file, originalSHA: String? = old ? nil : sourceSHA
                 if old, let metadata = try? read(file.deletingLastPathComponent().appendingPathComponent("queue-index.json"), privateFile: true),
@@ -79,7 +81,7 @@ enum ReportQueue {
         _ = try SavedReports.create(metadata, in: session, name: "queue-index.json")
         return result
     }
-    static func select(_ entries: [Entry], limit: Int = 12) -> [Entry] {
+    static func select(_ entries: [Entry], limit: Int = 16) -> [Entry] {
         guard limit > 0 else { return [] }
         let old = entries.filter(\.old).sorted { $0.date < $1.date }
         let fresh = entries.filter { !$0.old }.sorted { $0.critical && !$1.critical }

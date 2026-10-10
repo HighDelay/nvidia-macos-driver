@@ -7,6 +7,7 @@
 
 ## Driver / Mac
 - When two OpenCore partitions are connected and neither config's serial number decides, setup now finds the one that started your Mac from this boot's own settings instead of stopping with "startup partition could not be confirmed".
+- **Send logs now actually delivers the flicker capture and your OpenCore config.** Both were collected since 1.4/1.6 but lost a 12-file limit to other logs; they now go first.
 
 ## Scope
 macOS 15 Sequoia. Requires OpenCore.
