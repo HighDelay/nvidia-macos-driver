@@ -689,5 +689,38 @@ cat > "$RECOVER" <<PL
 PL
 chmod 644 "$RECOVER"; chown root:wheel "$RECOVER"
 ok "boot picker way back armed (NullMoth: Remove driver)"
+# Flicker stopgap (1.4): the first WindowServer of a boot composes against the driver's boot-console handoff and
+# strobes for many users; a WindowServer restart clears it ("sudo killall WindowServer after login" is the workaround
+# people share). This restarts it ONCE per boot, early, so the user logs into a clean compositor. The marker lives on a
+# tmpfs that is empty every boot, so it fires once and never loops. Opt out by creating /Library/NullMoth/no-wsreset.
+# This is a stopgap; the real fix is the boot->WindowServer surface/vblank handoff, chased with a >60 Hz/2nd display.
+cat > /Library/NullMoth/nullmoth-wsreset.sh <<'WS'
+#!/bin/bash
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+[ -e /Library/NullMoth/no-wsreset ] && exit 0
+MARK=/var/run/nullmoth-wsreset.done
+[ -e "$MARK" ] && exit 0
+kextstat 2>/dev/null | grep -q com.nullmoth.NVAccel || exit 0
+nvram 7C436110-AB2A-4BBB-A880-FE41995C9F82:nullmoth-remove >/dev/null 2>&1 && exit 0
+for i in $(seq 1 40); do pgrep -x WindowServer >/dev/null 2>&1 && break; sleep 1; done
+pgrep -x WindowServer >/dev/null 2>&1 || exit 0
+sleep 6
+: > "$MARK"   # claim the single shot BEFORE touching WindowServer, so a respawn can never loop
+P=$(pgrep -x WindowServer); [ -n "$P" ] && { kill -TERM $P 2>/dev/null; sleep 2; pgrep -x WindowServer >/dev/null 2>&1 && kill -9 $P 2>/dev/null; }
+echo "$(date) restarted WindowServer once (flicker stopgap)" >> /Library/NullMoth/wsreset.log 2>&1
+WS
+chmod 755 /Library/NullMoth/nullmoth-wsreset.sh; chown root:wheel /Library/NullMoth/nullmoth-wsreset.sh
+cat > /Library/LaunchDaemons/com.nullmoth.wsreset.plist <<'PL'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.nullmoth.wsreset</string>
+<key>ProgramArguments</key><array><string>/bin/bash</string><string>/Library/NullMoth/nullmoth-wsreset.sh</string></array>
+<key>RunAtLoad</key><true/>
+<key>ProcessType</key><string>Background</string>
+</dict></plist>
+PL
+chmod 644 /Library/LaunchDaemons/com.nullmoth.wsreset.plist; chown root:wheel /Library/LaunchDaemons/com.nullmoth.wsreset.plist
+ok "flicker stopgap armed (restarts WindowServer once per boot; opt out with /Library/NullMoth/no-wsreset)"
 if [ $INSTALL_THEN_PREPARE = 1 ]; then do_prepare; else ok "driver installed - restart to load it"; fi
 cleanup; echo "RESULT ok"
