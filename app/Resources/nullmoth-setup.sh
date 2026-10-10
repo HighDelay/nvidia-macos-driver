@@ -398,6 +398,12 @@ else
         found=${match# }; BOOT_BOUND=1; ok "OpenCore started this Mac from $found (its config sets exactly this boot's boot-args and model)"
       fi
     fi
+    # Only ONE OpenCore partition is connected, and OpenCore started this Mac (it writes opencore-version every boot):
+    # then that partition is the one (Mac 1.7 logs 10-10: "NOTE candidate disk0s2" alone, still stopped and asked).
+    if [ "$BOOT_BOUND" != 1 ] && [ "$(echo $found | wc -w | tr -d ' ')" = 1 ] && \
+       nvram 4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:opencore-version >/dev/null 2>&1; then
+      found=${found# }; BOOT_BOUND=1; ok "OpenCore started this Mac and $found holds the only OpenCore on any connected disk"
+    fi
     if [ "$BOOT_BOUND" != 1 ]; then
       for d in $found; do echo "NOTE candidate $d"; done
       stop "OpenCore's startup partition could not be confirmed - select the partition this Mac started from"

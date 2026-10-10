@@ -15,7 +15,7 @@ END = '    if [ "$BOOT_BOUND" != 1 ]; then\n      for d in $found; do echo "NOTE
 LIVE = "-v keepsyms=1 nvfb=1 nvaccel=1"
 
 
-def run(cfgs, model="iMacPro1,1"):
+def run(cfgs, model="iMacPro1,1", oc=True):
     s = SETUP.read_text()
     assert s.count(START) == 1 and s.count(END) == 1, "anchors moved in nullmoth-setup.sh"
     t = tempfile.mkdtemp()
@@ -26,7 +26,8 @@ def run(cfgs, model="iMacPro1,1"):
                            "PlatformInfo": {"Generic": {"SystemProductName": m}}}, f)
     bins = os.path.join(t, "bin")
     os.makedirs(bins)
-    for name, body in (("nvram", f'echo "boot-args\t{LIVE}"'), ("sysctl", f'echo "{model}"')):
+    nv = (f'case "$1" in *opencore-version) {"echo REL-108; exit 0" if oc else "exit 1"};; *) echo "boot-args\t{LIVE}";; esac')
+    for name, body in (("nvram", nv), ("sysctl", f'echo "{model}"')):
         p = os.path.join(bins, name)
         with open(p, "w") as f:
             f.write("#!/bin/bash\n" + body + "\n")
@@ -48,6 +49,14 @@ class BootArgsPick(unittest.TestCase):
 
     def test_matching_bootargs_with_another_model_is_not_picked(self):
         self.assertEqual(run({"disk0s1": (LIVE, "MacPro7,1"), "disk2s1": ("-v", "iMacPro1,1")}), "RESULT 0 disk0s1 disk2s1")
+
+
+class SingleCandidate(unittest.TestCase):
+    def test_the_only_opencore_partition_on_a_mac_opencore_started_is_picked(self):
+        self.assertEqual(run({"disk0s2": ("-v", "MacPro7,1")}), "RESULT 1 disk0s2")
+
+    def test_one_partition_without_opencore_having_started_the_mac_still_asks(self):
+        self.assertEqual(run({"disk0s2": ("-v", "MacPro7,1")}, oc=False), "RESULT 0 disk0s2")
 
 
 if __name__ == "__main__":
