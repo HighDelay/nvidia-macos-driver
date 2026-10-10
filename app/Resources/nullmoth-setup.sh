@@ -605,6 +605,23 @@ if [ "$sbm" != Disabled ]; then
   echo "CHANGE SecureBootModel: ${sbm:-unset} -> Disabled (Apple Secure Boot refuses kexts Apple did not sign)"
   EDITS+=("Misc.Security.SecureBootModel|-string|Disabled"); OLDSBM=${sbm:-Default}
 fi
+# AMFIPass (a Lilu plugin) is what lets WindowServer, a platform binary, load the ad hoc signed driver: with it off and
+# the same SIP bits and amfi boot-args, 1.9.0 logs (10-10, Ryzen 9 9900X) show "mapping process is a platform binary,
+# but mapped file is not", no Metal device and a black screen with a cursor. Every working machine has it on.
+kpos() { local i=0 p; while p=$(get Kernel.Add.$i.BundlePath); do [ "$p" = "$1" ] && { echo $i; return; }; i=$((i+1)); done; }
+KX="$(dirname "$C")/Kexts"; NEEDAMFIPASS=0
+for k in Lilu.kext AMFIPass.kext; do
+  ki=$(kpos $k)
+  if [ -n "$ki" ]; then
+    [ "$(get Kernel.Add.$ki.Enabled)" = true ] || { echo "CHANGE Kernel -> Add: turn $k on (the driver cannot load without it)"; EDITS+=("Kernel.Add.$ki.Enabled|-bool|true"); }
+  elif [ $k = AMFIPass.kext ] && [ -d "$KX/AMFIPass.kext" ] && [ -n "$(kpos Lilu.kext)" ]; then
+    echo "CHANGE Kernel -> Add: add AMFIPass.kext after Lilu (the driver cannot load without it)"; NEEDAMFIPASS=1
+  else
+    stop "$k is not in this OpenCore EFI ($KX). The driver needs Lilu and AMFIPass; build the EFI again with 1401, or add them, then try again"
+  fi
+done
+lp=$(kpos Lilu.kext); ap=$(kpos AMFIPass.kext)
+[ -n "$ap" ] && [ "$ap" -lt "$lp" ] && stop "AMFIPass.kext loads before Lilu.kext in Kernel -> Add; move it below Lilu in the config, then try again"
 # The macOS installer boots with a small GPU BAR (ResizeAppleGpuBars 0, so its fallback screen survives PCI setup); the
 # driver was tested with the card's full 8 GB BAR, so the installed system gets that back.
 bar=$(get UEFI.Quirks.ResizeGpuBars); abar=$(get Booter.Quirks.ResizeAppleGpuBars)
@@ -657,7 +674,7 @@ if nvram 7C436110-AB2A-4BBB-A880-FE41995C9F82:nullmoth-remove >/dev/null 2>&1 &&
   DELADD+=("nullmoth-remove"); echo "CHANGE NVRAM Delete: add nullmoth-remove (a leftover remove flag this Mac cannot clear from macOS)"
 fi
 NEEDTOOL=0; [ -z "$(tool_index)" ] && { NEEDTOOL=1; echo "CHANGE boot picker: add \"$TOOL_NAME\" (the way back if the driver ever stops macOS starting)"; }
-[ ${#EDITS[@]} = 0 ] && [ ${#DELADD[@]} = 0 ] && [ $NEEDTOOL = 0 ] && [ $NEEDBLOCK = 0 ] && ok "OpenCore already has every setting the driver needs"
+[ ${#EDITS[@]} = 0 ] && [ ${#DELADD[@]} = 0 ] && [ $NEEDTOOL = 0 ] && [ $NEEDBLOCK = 0 ] && [ $NEEDAMFIPASS = 0 ] && ok "OpenCore already has every setting the driver needs"
 
 if [ $SIPON = 1 ]; then
   note "SIP is still fully on in this boot: only SIP, Secure Boot, boot arguments and the boot picker entry change now"
@@ -682,6 +699,9 @@ if [ $DRY = 0 ]; then
   if [ $NEEDBLOCK = 1 ]; then
     has Kernel.Block || plutil -insert Kernel.Block -array "$C" || fail=1
     plutil -insert Kernel.Block -json '{"Arch":"Any","Comment":"boot framebuffer IONDRVFramebuffer steals index 0 from NVRMFB","Enabled":true,"Identifier":"com.apple.iokit.IONDRVSupport","MaxKernel":"","MinKernel":"","Strategy":"Exclude"}' -append "$C" || fail=1
+  fi
+  if [ $NEEDAMFIPASS = 1 ]; then
+    plutil -insert Kernel.Add -json '{"Arch":"Any","BundlePath":"AMFIPass.kext","Comment":"AMFIPass (NullMoth driver)","Enabled":true,"ExecutablePath":"Contents/MacOS/AMFIPass","MaxKernel":"","MinKernel":"","PlistPath":"Contents/Info.plist"}' -append "$C" || fail=1
   fi
   if [ ${#DELADD[@]} -gt 0 ]; then
     has NVRAM.Delete || plutil -insert NVRAM.Delete -dictionary "$C" || fail=1
