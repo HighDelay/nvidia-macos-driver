@@ -8,6 +8,8 @@
 - **Send logs now includes your OpenCore config** (with your serial numbers, board serial, UUID and ROM removed) and the list of kexts and drivers in your EFI, so a problem on your own EFI can be fixed from what is actually in it.
 
 ## Windows (1401 1.6.0)
+- **Sticks whose serial number changes on every read are accepted.** Some USB sticks (SMI controllers) report a new serial each time Windows asks, so every write stopped with "disk N is not the USB stick you picked any more". The stick now counts as the same one when it is the only USB disk of that exact size and model at the picked disk number.
+- **The macOS download keeps going on networks that pause it for minutes.** It now waits out up to about 15 minutes of empty connections (was about 2.5), asks Apple for a fresh download link along the way, and a reset on a resume no longer ends the download.
 - **A Linux USB probe report can now be built into an EFI.** If the Windows scan will not run or finish on your PC, upload the probe and support can build your EFI from it.
 
 ## Ryzen 7000 / 9000 (AM5)
