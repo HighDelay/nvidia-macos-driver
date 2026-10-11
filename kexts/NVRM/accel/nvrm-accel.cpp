@@ -38,13 +38,31 @@ static void               nvAccelWriteStamp(int index, unsigned int value);
 #include "nvkms-kapi.h"
 #include <sys/sysctl.h>
 #include <libkern/OSAtomic.h>
+extern "C" {   // kern/thread_call.h and kern/clock.h clash with the family headers here, so the KPIs are declared by hand
+struct thread_call *thread_call_allocate(void (*func)(void *, void *), void *param0);
+int thread_call_enter_delayed(struct thread_call *call, uint64_t deadline);
+void clock_interval_to_deadline(uint32_t interval, uint32_t scale_factor, uint64_t *result);
+}
 static volatile SInt64 gCntVmAlloc, gCntVmAllocBytes, gCntVmDealloc, gCntVmDeallocBytes, gCntVmRefused,
                        gCntResNew, gCntResFree, gCntMapCommit, gCntMapRelease, gCntMapFree;
 static void nvaccelInstallSysctl(void);
 static int gNvAccelArmed = 0;
-static const unsigned kNvMaxFB = 4;
+// 1 once the headless check restored the plugin name without arming (no NVIDIA display head). The Metal plugin reads it:
+// a headless GPU hands frames to another GPU's WindowServer through system memory, so IOSurfaces must be copied out.
+static int gNvHeadless = 0;
+SYSCTL_INT(_debug, OID_AUTO, nvaccel_headless, CTLFLAG_RD | CTLFLAG_LOCKED | CTLFLAG_KERN, &gNvHeadless, 0,
+           "1 = no NVIDIA display: Metal device for apps only, WindowServer on the GPU that owns the display");
+// 4 NVIDIA heads (nvfbheads=4) + 1 for an Intel built-in panel (NMIntelFB, IOFBDependentIndex 4): WindowServer composites
+// that panel on the NVIDIA card and the display-pipe copy path below writes each frame into the Intel scan-out surface.
+static const unsigned kNvMaxFB = 5;
 static unsigned gNvHeadsPublished = 0, gNvHeadsRegistered = 0;
 static unsigned gNvHeadsPiped = 0;
+// The Intel built-in panel (head 4) joins only when this is 1. Off by default while the path is proven: a write at run
+// time (then debug.nvaccelfb=3 and a WindowServer restart) can be undone by a reboot, so a hang never needs hands
+// (10-10: the first virtual-panel test froze studio at boot and needed a power cycle).
+static int gNvIgpu = 0;
+SYSCTL_INT(_debug, OID_AUTO, nvaccel_igpu, CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_KERN, &gNvIgpu, 0,
+           "1 = give an Intel built-in panel (NMIntelFB, head 4) a display pipe on this accelerator");
 
 extern "C" kern_return_t _start(kmod_info_t *ki, void *d); extern "C" kern_return_t _stop(kmod_info_t *ki, void *d);
 extern "C" { KMOD_EXPLICIT_DECL(com.nullmoth.NVAccel, "0.1", _start, _stop) }
@@ -211,6 +229,7 @@ public:
     NVDisplayMachine *fDM = nullptr;
     IOPCIDevice *fPCI = nullptr;
     IONotifier *fFBNote = nullptr;
+    IONotifier *fIntelNote = nullptr;
     static NVAccel *gAccel;
     IOService *fFB = nullptr;
     IOService *volatile fFBs[kNvMaxFB] = {};
@@ -243,7 +262,9 @@ public:
                      slotted ? "its extra reference returned" : "NOT slotted: keeping its reference rather than risk a reader");
                 if (slotted) old->release();
             }
-        } else if (!OSCompareAndSwapPtr(nullptr, newService, (void *volatile *)&me->fFB)) newService->release();
+        // only head 0 may become the primary framebuffer: an Intel panel (index 4) publishing first became fFB (10-10 log:
+        // "head 0 displaced NMIntelFB, which published first"), and on a laptop with nothing on the NVIDIA ports it stays
+        } else if (idx != 0 || !OSCompareAndSwapPtr(nullptr, newService, (void *volatile *)&me->fFB)) newService->release();
         unsigned before = me->fDM ? me->fDM->getFramebufferCount() : 0xFFFFFFFFu;
         ALOG("%s published -- display machine framebuffer count = %u (index %u %s)", newService->getName(), before, idx, what);
         if (gNvAccelArmed)
@@ -252,6 +273,52 @@ public:
         else
             ALOG("  to register it:  sudo sysctl -w debug.nvaccelfb=1   (2 = re-run the family's own sweep)");
         return true;
+    }
+    // Headless GPU (laptops whose panel and outputs are all on the Intel or AMD GPU: issues #76, #106). NVKMS finds no
+    // display, so no NVRMFB head ever publishes and the withheld MetalPluginName was never restored: Metal never offered
+    // the card, although NVRM and NVK run it fine (#106: vkCreateInstance enumerates the GTX 1660 Ti). Apple's own
+    // two-GPU MacBook Pros work this way: the integrated GPU drives every display and WindowServer, and the discrete GPU
+    // is a second Metal device that apps choose and macOS copies their frames from. So when no head has published by the
+    // deadline, the plugin name goes back on WITHOUT arming: apps get the NVIDIA device, and WindowServer (allow-listed
+    // "!WindowServer" = only when armed) keeps the GPU that owns the display. Nothing here touches a display pipe or a
+    // mode change. Boot-arg -nvaccelnoheadless keeps the old behaviour.
+    static constexpr uint32_t kHeadlessDeadlineSec = 60;   // chosen: NVRMFB heads publish within ~20 s of start (#76 log)
+    struct thread_call *fHeadlessCall = nullptr;
+    void armHeadlessCheck() {
+        int off = 0;
+        if (PE_parse_boot_argn("-nvaccelnoheadless", &off, sizeof off)) { ALOG("headless check: off (-nvaccelnoheadless)"); return; }
+        fHeadlessCall = thread_call_allocate(&NVAccel::headlessCheck, this);
+        if (!fHeadlessCall) { ALOG("headless check: thread_call_allocate FAILED -- a GPU with no display stays hidden from Metal"); return; }
+        uint64_t when = 0;
+        clock_interval_to_deadline(kHeadlessDeadlineSec, kSecondScale, &when);
+        thread_call_enter_delayed(fHeadlessCall, when);
+        ALOG("headless check: armed for %u s from now", kHeadlessDeadlineSec);
+    }
+    static void headlessCheck(void *p0, void *) {
+        NVAccel *me = (NVAccel *)p0;
+        if (!me || me != gAccel) return;
+        if (me->fRegLock) IOLockLock(me->fRegLock);
+        const char *why = me->fFB ? "a display head published" : !me->fMetalPlugin ? "no plugin name to restore"
+                        : me->getProperty("MetalPluginName") ? "the plugin name is already back" : nullptr;
+        if (why) {
+            ALOG("headless check: not headless (%s) -- nothing to do", why);
+        } else {
+            // name the GPU that owns the display, so a log says which driver WindowServer is on
+            char owner[64] = "none found";
+            if (OSIterator *it = getMatchingServices(serviceMatching("IOFramebuffer"))) {
+                while (OSObject *o = it->getNextObject()) {
+                    IOService *s = OSDynamicCast(IOService, o);
+                    if (s && !s->metaCast("NVRMNVDAFramebuffer")) { strlcpy(owner, s->getMetaClass()->getClassName(), sizeof owner); break; }
+                }
+                it->release();
+            }
+            me->setProperty("MetalPluginName", me->fMetalPlugin);
+            me->setProperty("NVAccelHeadless", kOSBooleanTrue);
+            gNvHeadless = 1;
+            ALOG("headless check: no NVIDIA display head after %u s -- MetalPluginName restored WITHOUT arming: apps get "
+                 "the NVIDIA Metal device, WindowServer stays on the display's GPU (%s)", kHeadlessDeadlineSec, owner);
+        }
+        if (me->fRegLock) IOLockUnlock(me->fRegLock);
     }
     void deliverModeChange() {
         if (!fDM) return;
@@ -282,12 +349,17 @@ public:
         for (unsigned i = 0; i < kNvMaxFB; i++) {
             IOService *fb = fFBs[i];
             if (!fb) {
+                // The Intel panel (index 4, NMIntelFB) does not wait for NVIDIA heads that never publish: studio with one
+                // monitor publishes only head 0, and the walk stopped there, so the Intel head got no pipe (measured 10-10,
+                // published 0x11 registered 0x1). Pipes are found by their framebuffer pointer, not their number.
+                if (gNvIgpu && i < 4 && ((gNvHeadsPublished >> 4) & 1)) { i = 3; continue; }
                 if (gNvHeadsPublished >> i)
                     ALOG("  %s: index %u has not published (published 0x%x): stopping, so no head above it gets a pipe "
                          "this walk", why, i, gNvHeadsPublished);
                 break;
             }
             if (fFBRegistered & (1u << i)) continue;
+            if (i == 4 && !gNvIgpu) break;   // the Intel panel waits for debug.nvaccel_igpu=1
             unsigned b = fDM->getFramebufferCount();
             ALOG("  %s: calling found_framebuffer(%s index %u) -- count before %u", why, fb->getName(), i, b);
             fDM->found_framebuffer((IOFramebuffer *)fb);
@@ -507,6 +579,12 @@ public:
                 fFBNote = addMatchingNotification(gIOFirstPublishNotification, fbm, &NVAccel::fbPublished, this, nullptr, 0);
                 fbm->release();
                 ALOG("watching for NVRMFramebuffer to publish -> notifier %p", fFBNote);
+                // a laptop whose built-in panel is on the Intel GPU: NMIntelFB publishes as head 4 of this accelerator
+                if (OSDictionary *im = serviceMatching("NMIntelFB")) {
+                    fIntelNote = addMatchingNotification(gIOFirstPublishNotification, im, &NVAccel::fbPublished, this, nullptr, 0);
+                    im->release();
+                    ALOG("watching for an Intel built-in panel (NMIntelFB) -> notifier %p", fIntelNote);
+                }
                 nvaccelInstallSysctl();
                 if (getProperty("MetalPluginName")) {
                     OSObject *mp = getProperty("MetalPluginName"); if (mp) mp->retain();
@@ -514,6 +592,7 @@ public:
                     removeProperty("MetalPluginName");
                     ALOG("MetalPluginName withheld -- nothing will load the Metal plugin until "
                          "`sysctl -w debug.nvaccelfb=1` puts it back, and a reboot takes it away again");
+                    armHeadlessCheck();
                 }
             } else ALOG("serviceMatching(NVRMFramebuffer) returned NULL -- cannot watch for the framebuffer");
         }
@@ -893,13 +972,14 @@ NVACCEL_CNT(nvaccel_iop_ok_h0,        gCntIopOkHead[0],   "frames copied to head
 NVACCEL_CNT(nvaccel_iop_ok_h1,        gCntIopOkHead[1],   "frames copied to head 1's panel");
 NVACCEL_CNT(nvaccel_iop_ok_h2,        gCntIopOkHead[2],   "frames copied to head 2's panel");
 NVACCEL_CNT(nvaccel_iop_ok_h3,        gCntIopOkHead[3],   "frames copied to head 3's panel");
+NVACCEL_CNT(nvaccel_iop_ok_h4,        gCntIopOkHead[4],   "frames copied to head 4 (an Intel built-in panel, NMIntelFB)");
 SYSCTL_UINT(_debug, OID_AUTO, nvaccel_heads_published, CTLFLAG_RD | CTLFLAG_LOCKED | CTLFLAG_KERN, &gNvHeadsPublished, 0,
             "bit i = head i's framebuffer has published to the accelerator");
 SYSCTL_UINT(_debug, OID_AUTO, nvaccel_heads_registered, CTLFLAG_RD | CTLFLAG_LOCKED, &gNvHeadsRegistered, 0,
             "bit i = head i's framebuffer was handed to the display machine (found_framebuffer)");
 SYSCTL_UINT(_debug, OID_AUTO, nvaccel_heads_piped, CTLFLAG_RD | CTLFLAG_LOCKED, &gNvHeadsPiped, 0,
             "bit i = head i has a display pipe that drives ITS OWN framebuffer (pipe+0x98 read back)");
-static_assert(kNvMaxFB == 4, "kNvMaxFB changed: add debug.nvaccel_iop_ok_h<i> for every new head");
+static_assert(kNvMaxFB == 5, "kNvMaxFB changed: add debug.nvaccel_iop_ok_h<i> for every new head");
 NVACCEL_CNT(nvaccel_iop_fail,         gCntIopFail,        "K3: transactions refused (see the capped iop: log lines)");
 NVACCEL_CNT(nvaccel_iop_empty,        gCntIopEmpty,       "K3: transactions with no plane (gamma/options only)");
 NVACCEL_CNT(nvaccel_iop_src_res,      gCntIopSrcRes,      "K3: frames sourced from our VRAM resource");
@@ -933,6 +1013,7 @@ static void nvaccelInstallSysctl(void)
 {
     if (gSysctlInstalled) return;
     sysctl_register_oid(&sysctl__debug_nvaccelfb);
+    sysctl_register_oid(&sysctl__debug_nvaccel_headless);
     sysctl_register_oid(&sysctl__debug_nvaccel_vm_alloc);       sysctl_register_oid(&sysctl__debug_nvaccel_vm_alloc_bytes);
     sysctl_register_oid(&sysctl__debug_nvaccel_vm_dealloc);     sysctl_register_oid(&sysctl__debug_nvaccel_vm_dealloc_bytes);
     sysctl_register_oid(&sysctl__debug_nvaccel_vm_refused);
@@ -954,6 +1035,7 @@ static void nvaccelInstallSysctl(void)
     sysctl_register_oid(&sysctl__debug_nvaccel_iop_async_refused); sysctl_register_oid(&sysctl__debug_nvaccel_iop_async_drop);
     sysctl_register_oid(&sysctl__debug_nvaccel_iop_ok_h0);      sysctl_register_oid(&sysctl__debug_nvaccel_iop_ok_h1);
     sysctl_register_oid(&sysctl__debug_nvaccel_iop_ok_h2);      sysctl_register_oid(&sysctl__debug_nvaccel_iop_ok_h3);
+    sysctl_register_oid(&sysctl__debug_nvaccel_iop_ok_h4);      sysctl_register_oid(&sysctl__debug_nvaccel_igpu);
     sysctl_register_oid(&sysctl__debug_nvaccel_heads_published); sysctl_register_oid(&sysctl__debug_nvaccel_heads_registered);
     sysctl_register_oid(&sysctl__debug_nvaccel_heads_piped);
     gSysctlInstalled = true;
@@ -1382,6 +1464,8 @@ static bool nvAccelIopAsyncStart(void *pipe, IOService *fb, unsigned head, IOSur
 static bool nvAccelIopFlip(IOService *fb, unsigned head, IOSurface *s, void *pipe)
 {
     if (!gIopFlip || !fb || !s || head >= kNvMaxFB) return false;
+    // zero-copy scan-out is an NVIDIA display-engine flip; another vendor's panel (NMIntelFB) always takes the copy
+    if (!fb->metaCast("NVRMNVDAFramebuffer")) return false;
     NVAccel *a = NVAccel::gAccel;
     if (!a) return nvAccelIopFlipNo(1);
     if (s->getPixelFormat() != 0x42475241u) return nvAccelIopFlipNo(2);
@@ -1446,7 +1530,7 @@ static int nvaccel_crc_sysctl SYSCTL_HANDLER_ARGS
 }
 static void nvAccelIopHome(IOService *fb, unsigned head)
 {
-    if (!fb || head >= kNvMaxFB || !gIopFlipped[head]) return;
+    if (!fb || head >= kNvMaxFB || !gIopFlipped[head] || !fb->metaCast("NVRMNVDAFramebuffer")) return;
     struct NVRMFlipRequest f; nvSVZero(&f, sizeof f);
     f.version = NVRM_FLIP_ABI_VERSION; f.flags = 1u;
     const OSSymbol *sym = OSSymbol::withCStringNoCopy("nvFlipToSurfacePure");

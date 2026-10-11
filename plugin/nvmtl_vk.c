@@ -1687,12 +1687,24 @@ static int nvmtl_vk_image_create_typed_lifetime_body(uint32_t w, uint32_t h, uin
 
     return 0;
 }
+#include <sys/sysctl.h>
+/* A GPU with no display of its own (laptops whose screen is on the Intel or AMD GPU; the kernel sets
+   debug.nvaccel_headless) hands frames to that GPU's WindowServer, which reads an IOSurface from system memory and
+   cannot page our VRAM copy off. Apple's two-GPU Macs copy the discrete GPU's frames the same way. So on such a GPU,
+   IOSurface textures are private per process and copied out after every GPU write. */
+static int nvmtl_gpu_headless(void)
+{
+    static int h = -1;
+    if (h < 0) { int v = 0; size_t n = sizeof v; h = sysctlbyname("debug.nvaccel_headless", &v, &n, NULL, 0) == 0 && v;
+                 if (h) nvlog("headless GPU: the display belongs to another GPU - IOSurfaces are copied out to system memory"); }
+    return h;
+}
 int nvmtl_vk_surface_share_on(void)
 {
     static int on = -1;
     if (on < 0) {
         const char *e = getenv("NVMTL_NO_SURFACE_SHARE");
-        on = pnvk_stage_import && g_extfd && g_linmod && !(e && e[0] == '1');
+        on = pnvk_stage_import && g_extfd && g_linmod && !(e && e[0] == '1') && !nvmtl_gpu_headless();
         nvlog("item 7: IOSurface textures %s (NVK import %s, VK_KHR_external_memory_fd %s, DRM linear %s, NVMTL_NO_SURFACE_SHARE=%s)",
               on ? "live in the surface's family VRAM (one per surface, every process)" : "private per process (copies)",
               pnvk_stage_import ? "present" : "ABSENT", g_extfd ? "present" : "ABSENT", g_linmod ? "present" : "ABSENT", e ?: "unset");
@@ -1704,7 +1716,7 @@ int nvmtl_vk_surface_dirty(uint32_t surfaceID, uint32_t plane)
     static int on = -1;
     if (on < 0) {
         const char *e = getenv("NVMTL_NO_SURFACE_PAGEOFF");
-        on = pnvk_surface_dirty && !(e && e[0] == '1');
+        on = pnvk_surface_dirty && !(e && e[0] == '1') && !nvmtl_gpu_headless();
         nvlog("after a GPU write, IOSurface VRAM is %s (NVK dirty export %s, NVMTL_NO_SURFACE_PAGEOFF=%s)",
               on ? "marked newest; a CPU lock / the display pipe pages it off (Apple's page-off)" : "copied out eagerly (old)",
               pnvk_surface_dirty ? "present" : "ABSENT", e ?: "unset");
@@ -4665,7 +4677,14 @@ int nvmtl_vk_cmd_empty_pass(nvk_cmdbuf *c, const nvk_pass *ps)
 int nvmtl_vk_cmd_begin_render(nvk_cmdbuf *c, nvk_image *img, nvk_pipeline *p, const float clear[4])
 { return nvmtl_vk_cmd_begin_render_ex(c, img, p, clear, 0); }
 void nvmtl_vk_cmd_set_viewport(nvk_cmdbuf *c, float x, float y, float w, float h, float zn, float zf)
-{ VkViewport vp = { x, y + h, w, -h, zn, zf }; pvkCmdSetViewport(c->cb, 0, 1, &vp); }
+{
+    /* Vulkan requires minDepth/maxDepth in [0,1] and NVK asserts it (nvk_emit_viewport "0.0 <= zmin && zmin <= 1.0");
+       Apple GPUs take any value. 1.10 crash reports (10-11, RTX 4060): mediaanalysisd's Live Text draw aborted there on
+       every run. The !(>=) form also sends NaN to Metal's defaults, 0 and 1. */
+    if (!(zn >= 0.0f)) zn = 0.0f; else if (zn > 1.0f) zn = 1.0f;
+    if (!(zf >= 0.0f)) zf = isnan(zf) ? 1.0f : 0.0f; else if (zf > 1.0f) zf = 1.0f;
+    VkViewport vp = { x, y + h, w, -h, zn, zf }; pvkCmdSetViewport(c->cb, 0, 1, &vp);
+}
 static void nvmtl_vk_zero_dummies(void)
 {
     static int done;
