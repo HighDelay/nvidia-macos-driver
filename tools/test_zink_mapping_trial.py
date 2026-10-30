@@ -61,6 +61,36 @@ class TrialTests(unittest.TestCase):
         with self.assertRaises(RuntimeError): trial.manifest()
         self.assertEqual((self.installed/trial.LIBRARY).read_bytes(), self.old)
 
+    def upgrade_record(self):
+        trial.apply(self.record)
+        updated = json.loads(json.dumps(self.record))
+        updated['previous_trial_sha256'] = [self.record['payload_sha256'][trial.LIBRARY]]
+        (self.payload/trial.LIBRARY).write_bytes(b'second candidate')
+        updated['payload_sha256'][trial.LIBRARY] = trial.digest(self.payload/trial.LIBRARY)
+        return updated
+
+    def test_upgrade_preserves_original_and_can_restore(self):
+        updated = self.upgrade_record()
+        trial.apply(updated)
+        self.assertEqual((self.installed/trial.LIBRARY).read_bytes(), b'second candidate')
+        self.assertEqual((self.installed/trial.BACKUP_NAME/trial.LIBRARY).read_bytes(), self.old)
+        trial.restore(updated)
+        self.assertEqual((self.installed/trial.LIBRARY).read_bytes(), self.old)
+
+    def test_failed_upgrade_can_restore_original(self):
+        updated = self.upgrade_record()
+        with patch.object(trial.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, 'codesign')):
+            with self.assertRaises(subprocess.CalledProcessError): trial.apply(updated)
+        self.assertEqual((self.installed/trial.LIBRARY).read_bytes(), self.new)
+        trial.restore(updated)
+        self.assertEqual((self.installed/trial.LIBRARY).read_bytes(), self.old)
+
+    def test_upgrade_refuses_unknown_library(self):
+        updated = self.upgrade_record()
+        (self.installed/trial.LIBRARY).write_bytes(b'unknown newer driver')
+        with self.assertRaises(RuntimeError): trial.apply(updated)
+        self.assertEqual((self.installed/trial.LIBRARY).read_bytes(), b'unknown newer driver')
+
 
 if __name__ == '__main__':
     unittest.main()

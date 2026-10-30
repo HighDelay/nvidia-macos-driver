@@ -45,7 +45,8 @@ def main():
     results = []
     for case in ('upload', 'map-failure', 'read-failure', 'full-bar',
                  'persistent', 'persistent-coherent', 'full-bar-persistent',
-                 'hardware', 'hardware-persistent'):
+                 'hardware', 'hardware-persistent', 'small-static', 'small-dynamic',
+                 'full-bar-small-static', 'hardware-small-static'):
         if case.startswith('full-bar'):
             env['ZINK_TEST_FULL_BAR'] = '1'
         else:

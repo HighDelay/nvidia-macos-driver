@@ -58,17 +58,27 @@ int main(int argc, char **argv)
    printf("GL_RENDERER=%s\n",glGetString(GL_RENDERER));
    require(!glGetError(),"context has no GL error");
 
-   const size_t buffer_bytes = 32u << 20, map_bytes = 16u << 20;
+   /* 8 KiB bypasses both the <4 KiB CPU shadow and >=8196-byte staging
+    * policies. Its direct map can pin a whole 2 MiB BAR slab. */
+   int small = strstr(argv[3],"small-") != NULL;
+   const size_t buffer_bytes = small ? 8192 : 32u << 20;
+   const size_t map_bytes = small ? 8192 : 16u << 20;
+   const GLenum usage = strstr(argv[3],"small-static") ? GL_STATIC_DRAW :
+                        strstr(argv[3],"small-dynamic") ? GL_DYNAMIC_DRAW : GL_STREAM_DRAW;
    int persistent = strstr(argv[3],"persistent") != NULL;
    int coherent = !strcmp(argv[3],"persistent-coherent");
    int full_bar = !strncmp(argv[3],"full-bar",8);
    int hardware = !strncmp(argv[3],"hardware",8);
-   GLuint pbo; glGenBuffers(1,&pbo); glBindBuffer(GL_PIXEL_UNPACK_BUFFER,pbo);
+   /* PBO creation always requests PIPE_USAGE_STAGING in Mesa. Use ARRAY_BUFFER
+    * for the mutable cases, then consume the same storage as a PBO below. */
+   GLenum allocation_target = small ? GL_ARRAY_BUFFER : GL_PIXEL_UNPACK_BUFFER;
+   GLuint pbo; glGenBuffers(1,&pbo); glBindBuffer(allocation_target,pbo);
    if (persistent)
       glBufferStorage(GL_PIXEL_UNPACK_BUFFER,buffer_bytes,NULL,
                       GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | (coherent ? GL_MAP_COHERENT_BIT : 0));
    else
-      glBufferData(GL_PIXEL_UNPACK_BUFFER,buffer_bytes,NULL,GL_STREAM_DRAW);
+      glBufferData(allocation_target,buffer_bytes,NULL,usage);
+   glBindBuffer(GL_PIXEL_UNPACK_BUFFER,pbo);
    require(!glGetError(),"allocate transient PBO");
    int failure = !strcmp(argv[3],"map-failure") || !strcmp(argv[3],"read-failure");
    const GLbitfield map_flags = !strcmp(argv[3],"read-failure") ? GL_MAP_READ_BIT :
@@ -87,9 +97,9 @@ int main(int argc, char **argv)
       mapping = glMapBufferRange(GL_PIXEL_UNPACK_BUFFER,0,map_bytes,
                                 GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
    }
-   require(mapping != NULL,"map large transient upload after BAR restriction/failure");
+   require(mapping != NULL,"map upload after BAR restriction/failure");
    memset(mapping,0,map_bytes);
-   enum { side = 256, face_bytes = side * side * 4 };
+   const unsigned side = small ? 8 : 256, face_bytes = side * side * 4;
    for (unsigned face = 0; face < 6; ++face) {
       unsigned char *pixels = mapping + face * face_bytes;
       for (unsigned p = 0; p < side * side; ++p) {
@@ -128,10 +138,10 @@ int main(int argc, char **argv)
          printf("PASS: actual memory properties; %u BAR maps, %u system maps; six cubemap faces verified\n",observed[1],observed[2]);
       } else if (full_bar) {
          require(observed[1] > 0,"full-BAR uploads must retain their device-local mapping preference");
-         printf("PASS: full BAR; %u BAR maps; 16 MiB transient upload; six cubemap faces verified\n",observed[1]);
+         printf("PASS: full BAR; %u BAR maps; %zu-byte upload; six cubemap faces verified\n",observed[1],map_bytes);
       } else {
          require(observed[2] > 0,"uploads must exercise system-memory mappings");
-         printf("PASS: simulated 256 MiB BAR; %u system maps; 16 MiB transient upload; six cubemap faces verified\n",observed[2]);
+         printf("PASS: simulated 256 MiB BAR; %u system maps; %zu-byte upload; six cubemap faces verified\n",observed[2],map_bytes);
       }
    } else {
       puts("PASS: mapping recovery and six GPU-uploaded cubemap faces verified");

@@ -18,7 +18,8 @@ BACKUP_NAME = '.persistent-mapping-trial'
 LIBRARY = 'libnvk_zink.dylib'
 PRIVATE = ('libnvk_zink_vulkan.dylib', 'libnvk_renderer.dylib')
 CASES = ('upload', 'map-failure', 'read-failure', 'full-bar', 'persistent',
-         'persistent-coherent', 'full-bar-persistent', 'hardware', 'hardware-persistent')
+         'persistent-coherent', 'full-bar-persistent', 'hardware', 'hardware-persistent',
+         'small-static', 'small-dynamic', 'full-bar-small-static', 'hardware-small-static')
 
 
 def digest(path):
@@ -68,12 +69,29 @@ def apply(record):
     before = record['installed_sha256'][LIBRARY]
     after = record['payload_sha256'][LIBRARY]
     backup = INSTALLED/BACKUP_NAME
-    if digest(current) == after:
-        require(backup.is_dir() and digest(backup/LIBRARY) == before, 'Missing original-library backup')
-        print('The mapping trial is already installed. Relaunch Minecraft.')
+    current_hash = digest(current)
+    if backup.exists():
+        require(backup.is_dir() and not backup.is_symlink() and
+                not (backup/LIBRARY).is_symlink() and digest(backup/LIBRARY) == before,
+                'Missing or damaged original-library backup')
+        saved = json.loads((backup/'TRIAL.json').read_text())
+        require(saved['installed_sha256'] == record['installed_sha256'],
+                'The earlier trial has a different original driver')
+        allowed = (before, after, *record.get('previous_trial_sha256', []))
+        require(current_hash in allowed, 'A newer/different driver is installed; refusing to overwrite it.')
+        if current_hash == after:
+            print('The mapping trial is already installed. Relaunch Minecraft.')
+            return
+        # Record both candidate hashes before replacing the dylib so rollback
+        # remains possible even if signing or replacement fails during upgrade.
+        temporary = backup/'TRIAL.json.new'
+        temporary.write_text(json.dumps(record, indent=2)+'\n')
+        os.replace(temporary, backup/'TRIAL.json')
+        replace_library(ROOT/LIBRARY, current, after)
+        print('Mapping trial updated; the original published library backup is preserved.')
+        print('Relaunch Minecraft. Use Restore-Zink.command to return to the published library.')
         return
-    require(digest(current) == before, 'Installed Zink differs from the published baseline; refusing to overwrite it.')
-    require(not backup.exists(), 'An earlier trial backup exists. Use Restore-Zink.command first.')
+    require(current_hash == before, 'Installed Zink differs from the published baseline; refusing to overwrite it.')
     backup.mkdir(mode=0o700)
     try:
         shutil.copyfile(current, backup/LIBRARY)
@@ -98,7 +116,8 @@ def restore(record):
     after = saved['payload_sha256'][LIBRARY]
     require(digest(backup/LIBRARY) == before, 'Original-library backup is damaged')
     current = INSTALLED/LIBRARY
-    require(digest(current) in (before, after), 'A newer/different driver is installed; refusing to restore over it.')
+    require(digest(current) in (before, after, *saved.get('previous_trial_sha256', [])),
+            'A newer/different driver is installed; refusing to restore over it.')
     replace_library(backup/LIBRARY, current, before)
     shutil.rmtree(backup)
     print('Published Zink library restored. Relaunch Minecraft; no reboot is needed.')

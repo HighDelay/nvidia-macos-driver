@@ -114,18 +114,21 @@
  #include "MoltenVK/mvk_vulkan.h"
  // Source of MVK_VERSION
  #include "MoltenVK/mvk_config.h"
-@@ -1048,6 +1048,20 @@
+@@ -1048,6 +1048,23 @@
     mai.pNext = NULL;
     mai.allocationSize = reqs->size;
     enum zink_heap heap = zink_heap_from_domain_flags(alloc_info->flags, alloc_info->aflags);
 +#if defined(NVK_ZINK_NVK)
-+   if (obj->is_buffer && templ->flags & PIPE_RESOURCE_FLAG_MAP_PERSISTENT &&
++   if (obj->is_buffer &&
++       ((alloc_info->flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ||
++        (templ->flags & PIPE_RESOURCE_FLAG_MAP_PERSISTENT)) &&
 +       zink_driverid(screen) == VK_DRIVER_ID_MESA_NVK && !screen->resizable_bar) {
-+      /* A persistent map cannot use the transient staging fallback. Keep
-+       * its backing CPU-accessible for the entire mapping lifetime instead
-+       * of allocating from the small DEVICE_LOCAL_VISIBLE BAR heap. This
-+       * also covers non-coherent GL storage, which the coherent-map check
-+       * below does not demote. GPU-only resources retain their VRAM heaps.
++      /* Allocating BAR-backed memory can succeed while mapping its slab
++       * fails later. Persistent maps cannot use transient staging, and
++       * ordinary mutable buffers can also map directly (an 8 KiB buffer
++       * maps a 2 MiB slab). Keep CPU-mappable backing in coherent system
++       * RAM; the host-visible heap ordering selects a non-device-local
++       * type first. Device-only buffers and images keep their VRAM heaps.
 +       */
 +      alloc_info->flags &= ~VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 +      alloc_info->flags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
