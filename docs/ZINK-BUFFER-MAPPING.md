@@ -51,3 +51,44 @@ each read/write test, and a retained BAR map in the full-BAR test. The
 [recorded results and log hashes](ZINK-BUFFER-MAPPING-TESTS.json) identify the
 tested library. Passing these controlled cases does not establish that the original
 Sequoia Minecraft instance now reaches gameplay; that needs a user retest.
+
+## Follow-up: persistent buffers and black windows
+
+The maintainer confirmed Minecraft working with a real 256 MB BAR1 device and
+approved the `v2.6.4_fix` release. A later [Sequoia log](https://mclo.gs/ZUBuDRI)
+from the RTX 2070 SUPER / 15.8.1 machine shows a black window with three more
+`vkMapMemory` failures. It reaches texture-atlas creation; shaders are disabled.
+This instance has 146 mods. A fresh Fabric/API instance has not yet been
+retested, and the original log does not identify the failed allocations' size
+or memory type. The black window cannot yet be attributed to presentation or
+to a particular mod.
+
+An expanded regression identifies a remaining allocation hole in the published
+runtime: non-coherent persistent `glBufferStorage` buffers still select the
+device-local/host-visible heap. They cannot use a temporary staging fallback
+because their CPU pointer must remain live. Under a simulated unavailable BAR
+map, this case returns an allocation error with the published library; the
+coherent persistent and transient cases pass.
+
+The candidate overlay places persistent buffer backing in coherent system RAM
+on small-BAR Darwin NVK devices, including non-coherent OpenGL mappings.
+Full-BAR preferences and GPU-only rendering resources retain their allocation
+policy. It also adds allocation size, memory-type flags, heap index and heap
+size to a failed-map diagnostic. These details distinguish remaining BAR maps
+from genuine system-memory mapping failures. This candidate still needs an
+in-game retest on the affected Sequoia machine. The local baseline and candidate
+results are recorded in [the persistent-mapping tests](ZINK-PERSISTENT-MAPPING-TESTS.json).
+
+The expanded test also keeps persistent buffers mapped while the GPU consumes
+their data, checks coherent/non-coherent storage, preserves full-BAR placement,
+and runs transient/persistent cases with the real hardware memory properties.
+
+`tools/zink_mapping_trial.py` supports a compact experimental bundle. Its
+`Test-Mapping.command` compares the installed and candidate libraries without
+installation and produces a Desktop log archive. `Apply-Zink-Trial.command`
+requires Minecraft to be closed, verifies the installed private renderer,
+backs up the original Zink library and atomically replaces only that dylib.
+`Restore-Zink.command` restores the verified original and refuses to overwrite
+a newer driver. Applying or undoing this userland trial needs a Minecraft
+relaunch, without a reboot. The published release remains unchanged while the
+candidate is being tested.

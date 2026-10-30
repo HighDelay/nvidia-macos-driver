@@ -7,6 +7,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef GL_MAP_PERSISTENT_BIT
+#define GL_MAP_PERSISTENT_BIT 0x0040
+#define GL_MAP_COHERENT_BIT 0x0080
+#define GL_CLIENT_MAPPED_BUFFER_BARRIER_BIT 0x00004000
+#endif
+
 static void require(int ok, const char *what)
 {
    if (!ok) { fprintf(stderr,"FAIL: %s\n",what); exit(1); }
@@ -15,7 +21,7 @@ static void require(int ok, const char *what)
 
 int main(int argc, char **argv)
 {
-   require(argc == 4,"usage: buffer-upload-probe libnvk_zink.dylib test-vulkan.dylib upload|full-bar|map-failure|read-failure");
+   require(argc == 4,"usage: buffer-upload-probe libnvk_zink.dylib test-vulkan.dylib upload|full-bar|map-failure|read-failure|persistent|persistent-coherent|full-bar-persistent");
    setvbuf(stdout,NULL,_IOLBF,0);
    void *test = dlopen(argv[2],RTLD_NOW | RTLD_LOCAL);
    require(test != NULL,"load process-local fault injector");
@@ -36,7 +42,10 @@ int main(int argc, char **argv)
    GLPROC(void,glGenBuffers,(GLsizei,GLuint *));
    GLPROC(void,glBindBuffer,(GLenum,GLuint));
    GLPROC(void,glBufferData,(GLenum,GLsizeiptr,const void *,GLenum));
+   GLPROC(void,glBufferStorage,(GLenum,GLsizeiptr,const void *,GLbitfield));
    GLPROC(void *,glMapBufferRange,(GLenum,GLintptr,GLsizeiptr,GLbitfield));
+   GLPROC(void,glFlushMappedBufferRange,(GLenum,GLintptr,GLsizeiptr));
+   GLPROC(void,glMemoryBarrier,(GLbitfield));
    GLPROC(GLboolean,glUnmapBuffer,(GLenum));
    GLPROC(void,glDeleteBuffers,(GLsizei,const GLuint *));
    GLPROC(void,glGenTextures,(GLsizei,GLuint *));
@@ -50,14 +59,23 @@ int main(int argc, char **argv)
    require(!glGetError(),"context has no GL error");
 
    const size_t buffer_bytes = 32u << 20, map_bytes = 16u << 20;
+   int persistent = strstr(argv[3],"persistent") != NULL;
+   int coherent = !strcmp(argv[3],"persistent-coherent");
+   int full_bar = !strncmp(argv[3],"full-bar",8);
+   int hardware = !strncmp(argv[3],"hardware",8);
    GLuint pbo; glGenBuffers(1,&pbo); glBindBuffer(GL_PIXEL_UNPACK_BUFFER,pbo);
-   glBufferData(GL_PIXEL_UNPACK_BUFFER,buffer_bytes,NULL,GL_STREAM_DRAW);
+   if (persistent)
+      glBufferStorage(GL_PIXEL_UNPACK_BUFFER,buffer_bytes,NULL,
+                      GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | (coherent ? GL_MAP_COHERENT_BIT : 0));
+   else
+      glBufferData(GL_PIXEL_UNPACK_BUFFER,buffer_bytes,NULL,GL_STREAM_DRAW);
    require(!glGetError(),"allocate transient PBO");
-   int full_bar = !strcmp(argv[3],"full-bar");
    int failure = !strcmp(argv[3],"map-failure") || !strcmp(argv[3],"read-failure");
    const GLbitfield map_flags = !strcmp(argv[3],"read-failure") ? GL_MAP_READ_BIT :
-                                GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT;
-   arm(failure ? 2 : full_bar ? 3 : 1);
+      persistent ? GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT |
+                   (coherent ? GL_MAP_COHERENT_BIT : GL_MAP_FLUSH_EXPLICIT_BIT) :
+                   GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT;
+   arm(failure ? 2 : full_bar || hardware ? 3 : 1);
    unsigned char *mapping = glMapBufferRange(GL_PIXEL_UNPACK_BUFFER,0,map_bytes,map_flags);
    unsigned observed[3]; stats(observed);
    if (failure) {
@@ -81,7 +99,12 @@ int main(int argc, char **argv)
          pixels[p*4+3] = 255;
       }
    }
-   require(glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER),"unmap upload");
+   if (persistent) {
+      if (!coherent) glFlushMappedBufferRange(GL_PIXEL_UNPACK_BUFFER,0,map_bytes);
+      glMemoryBarrier(GL_CLIENT_MAPPED_BUFFER_BARRIER_BIT);
+   } else {
+      require(glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER),"unmap upload");
+   }
    glBindBuffer(GL_PIXEL_UNPACK_BUFFER,0);
    GLuint cube; glGenTextures(1,&cube); glBindTexture(GL_TEXTURE_CUBE_MAP,cube);
    unsigned char *pixels = calloc(1,face_bytes); require(pixels != NULL,"readback buffer");
@@ -101,7 +124,9 @@ int main(int argc, char **argv)
    if (!failure) {
       stats(observed);
       require(!observed[0],"uploads must avoid unavailable large BAR mappings");
-      if (full_bar) {
+      if (hardware) {
+         printf("PASS: actual memory properties; %u BAR maps, %u system maps; six cubemap faces verified\n",observed[1],observed[2]);
+      } else if (full_bar) {
          require(observed[1] > 0,"full-BAR uploads must retain their device-local mapping preference");
          printf("PASS: full BAR; %u BAR maps; 16 MiB transient upload; six cubemap faces verified\n",observed[1]);
       } else {
@@ -110,6 +135,12 @@ int main(int argc, char **argv)
       }
    } else {
       puts("PASS: mapping recovery and six GPU-uploaded cubemap faces verified");
+   }
+   if (persistent) {
+      glBindBuffer(GL_PIXEL_UNPACK_BUFFER,pbo);
+      require(glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER),"unmap persistent upload after GPU completion");
+      glBindBuffer(GL_PIXEL_UNPACK_BUFFER,0);
+      puts("PASS: persistent mapping remained live through GPU cubemap uploads");
    }
    arm(0); free(pixels); glDeleteTextures(1,&cube); glDeleteBuffers(1,&pbo);
    require(!glGetError(),"GL cleanup");
