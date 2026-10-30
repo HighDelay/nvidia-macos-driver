@@ -364,7 +364,7 @@
     "runtime-tests-v2/private-icd-selection.log": "46400649f112312d89a033edab669d73c5cd645956d2474089af54c1dd88b5c3",
     "runtime-tests-v2/standalone.log": "ae80f166150d44345095b0c192e7b0fd58db14c178a6d206df5968d520c29c86"
   },
-  "sequoia_game_with_v2_retested": false,
+  "sequoia_game_with_v2_retested": true,
   "performance_benchmarked": false,
   "packaged_comparison_results": [
     {
@@ -498,5 +498,13 @@
       "returncode": 0
     }
   ],
-  "packaged_comparison_results_sha256": "ea7aa527f2266442363e1d1b5f6f81d3a1044844c359b060095e5e1bcb816ed1"
+  "packaged_comparison_results_sha256": "ea7aa527f2266442363e1d1b5f6f81d3a1044844c359b060095e5e1bcb816ed1",
+  "sequoia_confirmation": {
+    "date": "2026-10-31",
+    "url": "https://mclo.gs/CbC8KZ0",
+    "log_sha256": "f89e75294cba7230c70e9f66a97b3494a7a6257459ef8e80b8f4501d57ba27c5",
+    "system": "Sequoia 15.8.1 / 24H32, RTX 2070 SUPER, 256 MiB BAR1",
+    "result": "User screenshots confirm rendered menu and single-player world; log confirms native Zink/NVK, world entry, save and exit, with no vkMapMemory failures",
+    "remaining_log_warning": "PERF WARNING: >100 copy boxes; no performance improvement claimed"
+  }
 }

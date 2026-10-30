@@ -71,11 +71,13 @@ worker threads, multiple windows, VSync toggles and failed-work quarantine.
 This validates the adapter's complete lifecycle, including the GLD state-to-GLI
 relation, in those probe processes. A subsequent Minecraft startup selected
 Zink successfully but exposed a separate upload-buffer mapping crash. Small-BAR
-upload heaps now prefer system memory, and failed maps return an OpenGL memory
+CPU-visible buffers now prefer system memory, and failed maps return an OpenGL memory
 error instead of dereferencing an unset transfer. This repair applies to both
 Sequoia and Tahoe; see the [mapping investigation](ZINK-BUFFER-MAPPING.md).
-Minecraft gameplay on that Sequoia machine still needs retesting. The local
-Tahoe machine has 8 GiB BAR1.
+On 2026-10-31, the same user confirmed menus and single-player world rendering
+with the completed repair; the [game log](https://mclo.gs/CbC8KZ0) has no failed
+Vulkan maps. The local Tahoe machine currently has 8 GiB BAR1; the maintainer
+also previously confirmed Minecraft with a 256 MiB BAR1 configuration.
 
 The adapter covers core 3.2/4.1 and legacy compatibility CGL contexts through the
 entrypoints exposed by the current Apple SDK/framework. Mesa reporting OpenGL

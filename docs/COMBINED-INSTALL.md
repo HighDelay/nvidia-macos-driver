@@ -5,8 +5,9 @@ renderer**, enabled for Intel **Sequoia 15.5+ and Tahoe 26**. Local hardware
 testing covers **26.7.1 / 25G241**. The Sequoia candidate uses reviewed
 **15.8.1 / 24H32** CGL evidence. The RTX 2070 SUPER machine with 256 MiB BAR1
 passes all 25 isolated native Zink tests, including GPU-copy pixel checks,
-contexts, sharing, worker threads, resize and VSync. System-wide GLD
-registration, kernel linking, reboot and Minecraft gameplay remain untested there.
+contexts, sharing, worker threads, resize and VSync. Minecraft 26.3 menus and
+single-player world rendering are also user-confirmed after the small-BAR
+mapping repair. A fresh Sequoia kernel-collection build remains unqualified.
 It includes the existing
 Minecraft and Wine runtimes, plus bounded IOSurface import reuse and GPU copies
 for supported unaligned video planes. See `PACKAGE-IDENTITY.json` and the

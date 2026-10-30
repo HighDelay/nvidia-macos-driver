@@ -62,7 +62,10 @@ Retain the [static ABI review](ZINK-SEQUOIA-ABI.json) and distinguish that evide
 from application/boot qualification. The Sequoia RTX 2070 SUPER / 256 MiB BAR1
 machine subsequently passed all 25 isolated tests (native pixel copies, core/
 legacy contexts, sharing, resize, workers, windows, VSync and quarantine).
-Sequoia installation, kernel linking, reboot and gameplay remain untested.
+The user subsequently confirmed Minecraft 26.3 menus and single-player world
+rendering on this Sequoia machine after the small-BAR mapping repair; see
+[mapping evidence](ZINK-BUFFER-MAPPING.md). This does not qualify a fresh
+Sequoia kernel-collection build or every application.
 The shared adapter
 continues targeting macOS 15.5; do not copy Apple binaries into the runtime.
 The Zink package builder selects the GLD by default. Keep the original complete
@@ -80,6 +83,13 @@ Keep the Zink batch condition-variable and Darwin barrier repairs; the latter
 must have one serial return only after every other waiter leaves. Compare an
 equivalent upstream fix before removing either repair. Preserve the descriptor-
 set, staging-upload and bounded texture-worker fixes in the pinned overlay.
+
+Preserve the small-BAR CPU-visible buffer allocation policy, including both
+persistent storage and ordinary mutable buffers. Prefer coherent system RAM
+for their backing; retain full-BAR placement and device-only VRAM resources.
+Keep null-transfer handling after failed maps and allocation diagnostics.
+The 8 KiB static/dynamic regression must cover the 2 MiB backing slab, not just
+PBO allocations (which Mesa already classifies as staging).
 
 Keep native display synchronization tied to each context's CGL swap interval,
 including render-thread changes and independent windows. Preserve the explicit

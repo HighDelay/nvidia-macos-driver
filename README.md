@@ -72,8 +72,8 @@ Install the Zink-enabled package for **Sequoia 15.5+ or Tahoe**, then launch
 Minecraft with **OpenGL**. No companion mod, mod loader or JVM argument is
 needed. F3/logs should show **zink** and **NVK**; Minecraft's VSync toggle works.
 
-Sequoia 15.8.1 / RTX 2070 SUPER passes all 25 isolated tests; system-wide boot and
-gameplay remain pending. Tahoe Minecraft gameplay is verified.
+Minecraft gameplay is verified on Tahoe and Sequoia 15.8.1 / RTX 2070 SUPER
+with 256 MiB BAR1, including the small-BAR crash and black-window repair.
 [Compatibility, builds and test results](docs/ZINK-OPENGL.md).
 
 ### Official Vulkan renderer with NVK Bridge

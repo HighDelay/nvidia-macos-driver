@@ -170,7 +170,8 @@ def stage(base, zink, output, components=None, native_gld=False):
         shutil.copy2(ROOT / 'docs/ZINK-SEQUOIA-ABI.json', runtime / 'CGL-ABI-EVIDENCE.json')
         shutil.copy2(ROOT / 'docs/ZINK-SEQUOIA-TESTS.json', runtime / 'CGL-SEQUOIA-TESTS.json')
         for name in ('ZINK-PR2-REVIEW.md','COMBINED-INSTALL.md',
-                     'ZINK-BUFFER-MAPPING.md','ZINK-BUFFER-MAPPING-TESTS.json'):
+                     'ZINK-BUFFER-MAPPING.md','ZINK-BUFFER-MAPPING-TESTS.json',
+                     'ZINK-PERSISTENT-MAPPING-TESTS.json','ZINK-MUTABLE-MAPPING-TESTS.json'):
             shutil.copy2(ROOT / 'docs' / name,runtime / name)
         source_dir = runtime / 'zink-source'
         if source_dir.exists(): shutil.rmtree(source_dir)
@@ -223,7 +224,7 @@ def stage(base, zink, output, components=None, native_gld=False):
                     'gld_sha256': (base_tools.digest(payload / 'Library/GPUBundles/NVKZinkGLDriver.bundle/Contents/MacOS/NVKZinkGLDriver')
                                    if native_gld else None),
                     'zink_source_sha256': {p.name: base_tools.digest(p) for p in sorted(source_dir.iterdir()) if p.is_file()},
-                    'native_cgl': ('automatic GLD proxy for Intel Sequoia 15.5+ and Tahoe; Sequoia 15.8.1 passes 25 isolated probes, boot/gameplay tests pending'
+                    'native_cgl': ('automatic GLD proxy for Intel Sequoia 15.5+ and Tahoe; Minecraft 26.3 gameplay confirmed on Sequoia 15.8.1 / RTX 2070 SUPER / 256 MiB BAR1'
                                    if native_gld else 'explicit application attachment; GLD bundle is not included'),
                     'native_cgl_macos_majors': ['15','26'] if native_gld else [],
                     'native_cgl_abi_evidence_sha256': base_tools.digest(ROOT/'docs/ZINK-SEQUOIA-ABI.json'),

@@ -115,5 +115,11 @@ The expanded probe maps array-buffer storage, then uses it for six GPU cubemap
 uploads and verifies every pixel. The first trial fails both new constrained-BAR
 cases; the second passes all 13 cases. See [mutable-buffer test evidence](ZINK-MUTABLE-MAPPING-TESTS.json).
 The new installer accepts the exact first-trial hash and preserves its original
-published-library backup. The release has been returned to draft while the
-Sequoia Minecraft retest remains outstanding.
+published-library backup.
+
+On 2026-10-31, the affected Sequoia 15.8.1 / RTX 2070 SUPER user confirmed that
+trial v2 renders both menus and a single-player world. The [successful game
+log](https://mclo.gs/CbC8KZ0) confirms native Zink/NVK and a 256 MiB BAR1, with
+no `vkMapMemory` failures. This qualifies the reported black-window repair in
+Minecraft 26.3 with Fabric/API. The remaining copy-performance warning is not
+an allocation failure, and this test does not establish a performance gain.
