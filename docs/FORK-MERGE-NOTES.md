@@ -331,8 +331,12 @@ ZZZ and Honkai: Star Rail Global D3D11 gameplay are user-confirmed on RTX 2060
 SUPER / Tahoe 26.7.1 with YAAGL Wine 11.0-1, including scenery, characters and UI.
 HSR uses its Jadeite route with the required `--` separator; Steam Patch and the
 timeout fix default off for HSR/GI and on for ZZZ. Preserve these game-specific
-defaults. GI, CN gameplay, commercial CrossOver, other Wine builds and Sequoia
-hardware remain unqualified.
+defaults. A 2026-10-31 user report confirms GI startup and in-world rendering on
+RTX 4060 Laptop / native NVK with both Steam Patch and Timeout fix enabled.
+Document that tested GI configuration separately from its current default-off
+settings; do not apply it to HSR. The report did not specify OS/Wine versions.
+CN gameplay, commercial CrossOver, other Wine builds and Sequoia Wine hardware
+remain unqualified.
 Native and Windows Vulkan/D3D11 probes verify correctness, not an FPS improvement.
 D3D12 integration now includes pinned vkd3d-proton 3.1, optional NVIDIA Wine
 NGX/DXVK-NVAPI, and a GPU-copy bitmap HUD. ZZZ D3D12 and DLSS SR Quality were

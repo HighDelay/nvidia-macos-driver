@@ -108,8 +108,9 @@ For **ZZZ, Genshin Impact or Honkai: Star Rail**, use
 [YAAGL NVK](https://github.com/HighDelay/yaagl-nvk/releases) and its
 [setup guide](https://github.com/HighDelay/yaagl-nvk/blob/main/docs/NVK.md).
 It downloads Wine and uses this driver's installed graphics runtime.
-ZZZ/HSR Global gameplay and ZZZ D3D12/DLSS SR are verified; GI and commercial CrossOver
-remain unqualified. DLSSG and ray tracing are unqualified.
+ZZZ/HSR Global gameplay, GI in-game rendering and ZZZ D3D12/DLSS SR are verified.
+For GI, enable **Steam Patch** and **Timeout fix**. Commercial CrossOver, DLSSG
+and ray tracing remain unqualified.
 
 ## OBS display capture
 
