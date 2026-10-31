@@ -183,9 +183,33 @@ static inline void nvmtl_resref(id o, int d) {
 - (id)member:(id)o { os_unfair_lock_lock(&_lk); id m = [_s member:o]; os_unfair_lock_unlock(&_lk); return m; }
 - (NSArray *)nvmtlSnapshot { os_unfair_lock_lock(&_lk); NSArray *a = _s.allObjects; os_unfair_lock_unlock(&_lk); return a; }
 - (NSEnumerator *)objectEnumerator { return [[self nvmtlSnapshot] objectEnumerator]; }
-// for-in runs only over a command buffer part's own copy (one thread), never over a set still being encoded into
+// Fast enumeration can run while another encoder adds or removes resources. A pool-owned snapshot survives the loop's
+// inner pools and early exits. Empty it on exhaustion so a normal submission does not keep resources in the app's pool.
 - (NSUInteger)countByEnumeratingWithState:(NSFastEnumerationState *)st objects:(id __unsafe_unretained [])b count:(NSUInteger)n {
-    return [_s countByEnumeratingWithState:st objects:b count:n]; }
+    if (!st || !b || !n) return 0;
+    if (st->state == 0) {
+        // Build an owned array under the lock: -allObjects would leave a second array retaining every member in the
+        // caller's pool even after exhaustion. __autoreleasing explicitly transfers our +1 to the enclosing pool.
+        // A +1 stored in extra[] would leak on break/return/throw: fast enumeration has no cleanup callback.
+        os_unfair_lock_lock(&_lk);
+        NSMutableArray * __autoreleasing snapshot = [[NSMutableArray alloc] initWithCapacity:_s.count];
+        for (id o in _s) [snapshot addObject:o];
+        os_unfair_lock_unlock(&_lk);
+        st->extra[0] = (unsigned long)(__bridge void *)snapshot;
+        st->extra[1] = (unsigned long)snapshot.count;
+        st->state = 1; // state stores offset + 1 so zero remains the first-call marker
+        st->extra[2] = 0;
+        st->mutationsPtr = &st->extra[2]; // compiler reads this; snapshot membership is fixed until exhaustion
+    }
+    NSMutableArray *snapshot = (__bridge NSMutableArray *)(void *)st->extra[0];
+    NSUInteger offset = st->state - 1, total = (NSUInteger)st->extra[1];
+    if (offset >= total) { [snapshot removeAllObjects]; st->extra[0] = 0; return 0; }
+    NSUInteger take = MIN(n, total - offset);
+    [snapshot getObjects:b range:NSMakeRange(offset, take)];
+    st->itemsPtr = b;
+    st->state += take;
+    return take;
+}
 // _mru: objects added lately, each in the set until it is removed (the set retains it, so its address cannot be reused
 // while it is listed). Encoders add the same few buffers, pipelines and samplers draw after draw (Apple's GL rebinds its
 // vertex, index and uniform buffers for every draw), and a hit skips the set's hash lookup.

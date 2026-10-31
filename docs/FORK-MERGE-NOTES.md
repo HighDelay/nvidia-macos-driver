@@ -19,6 +19,38 @@ Before each merge:
 The current upstream base is **2.6.4 at `f95f4d2`**, from `upstream/main`, integrated on
 2026-10-29. The preceding base was 2.6.3 at `190a4d4`, integrated on 2026-10-28.
 
+## NVMTL command recording caches
+
+The local framebuffer-fetch test candidate also carries v2.6.5 commits
+`4a377d9` and `8784c0b`: exclude separately bound set 3 from stage descriptor
+masks and fall back to older valid masks when new masks are unavailable.
+Retain the existing fetch barriers and bindings. This is not a complete v2.6.5
+merge; the upstream base above is unchanged. See
+[fetch-mask validation and deferred witness review](NVMTL-FRAMEBUFFER-FETCH-MASKS.md).
+
+Retain the per-recording, per-stage texture-index cache used by address-table
+snapshots and the single dummy-address query per snapshot. Invalidate sampled
+texture indices when a view, resource kind or null binding changes; copy them
+into each independently owned GPU snapshot. Buffer addresses and self-pointers
+must use the current page/offset, and no cached array may outlive its bind table.
+See [address snapshot validation](NVMTL-ADDRESS-SNAPSHOTS.md).
+Keep dirty/copy bitmaps sized for all `NVMTL_NBIND` entries, independently of the
+four-word base shader mask. Storage bindings 256–320 must neither overwrite
+adjacent state nor qualify for buffer-offset-only descriptor reuse.
+
+Keep the recording-local compute pipeline/descriptor binding cache, eight-entry
+successful threadgroup-variant cache, and framebuffer-fetch binding cache. Reset
+them on each command recording/event segment; preserve complete handle/layout/
+offset identity, retained pipeline ownership, failed-variant retry, internal
+occlusion pipeline tracking and invalidation before direct SASS hooks. A different
+lower-set layout can disturb the higher framebuffer-fetch set. Retain fetch
+barriers and all push constants even when bindings are unchanged.
+
+Resource-set enumeration uses a synchronized snapshot with a non-null mutation
+sentinel. Normal exhaustion must release resources before the app's pool drains;
+early exits must not leak. Keep the existing backend VkSampler interning and
+independent Metal wrappers. See [command cache validation](NVMTL-COMMAND-CACHES.md).
+
 ## Capture import reuse and planar GPU copies
 
 Preserve the installer/uninstaller permanent-path repair: recover obsolete

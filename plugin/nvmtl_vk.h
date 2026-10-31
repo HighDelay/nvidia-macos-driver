@@ -31,6 +31,7 @@ typedef struct { void *rp; void *pipe; void *layout; int has_depth; uint32_t dfm
     uint32_t vin_dyn, vin_stride[32];
     uint64_t bmask[4]; uint32_t bmask_ok;
     uint64_t gmask[2][4]; uint32_t gmask_ok;
+    uint64_t gmask2[2][4], bmask2[4]; uint32_t gmask2_ok, bmask2_ok;   /* the same with the framebuffer-fetch set (3) left out like the heap (NVMTL_DESC_MASK) */
     uint32_t ag_mask, ag_req; void *ag_src; size_t ag_srcn; void *ag_safe;
     uint64_t shape_identity;
     uint32_t lin;
@@ -90,6 +91,19 @@ typedef struct { void *cb; void *fb; void *pool; void *dset[2]; void *depth_view
                  /* Vulkan graphics bindings persist until changed; compute has its own bind point. */
                  void *graphics_pipeline, *graphics_layout, *graphics_sets[3];
                  uint32_t graphics_set_count, graphics_offset_count, graphics_offsets[4], gl_uniform_dyn[2];
+                 void *fetch_bound_layout, *fetch_bound_set;
+                 /* Dynamic graphics state also persists for the command buffer.  Keep the last normalized values so
+                    WindowServer's repeated quad setup does not record identical Vulkan commands. */
+                 uint32_t dyn_valid, dyn_topology, dyn_restart, dyn_cull, dyn_front;
+                 VkViewport dyn_viewport;
+                 VkRect2D dyn_scissor;
+                 float dyn_blend[4];
+                 /* Separate compute state, including internal dispatches. Zeroed at every recording begin. */
+                 void *compute_pipeline, *compute_layout, *compute_sets[3];
+                 uint32_t compute_set_count, compute_offset_count, compute_offsets[2];
+                 /* Successful variants only. Their owning pipelines are retained by the recording's resources. */
+                 struct { const nvk_pipeline *owner; void *pipe; uint32_t local[3]; } compute_variants[8];
+                 uint32_t compute_variant_next;
                  uint32_t gl_uniform_result; /* optional diagnostics for the next recorded draw */
                } nvk_cmdbuf;
 int  nvmtl_vk_init(void);

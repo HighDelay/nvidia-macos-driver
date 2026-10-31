@@ -944,7 +944,17 @@ static BOOL nvmtl_desc_fbo(MTLTextureDescriptor *d) {
 typedef struct { uint32_t magic, seed, gen; } nvmtl_vram_tag;
 #define NVMTL_VRAM_MAGIC 0x564d5634u
 static unsigned long long g_surf_vram, g_surf_private, g_surfin_skip, g_surfin_copy;
-static CFStringRef nvmtl_vram_tag_key(NSUInteger plane) { return CFStringCreateWithFormat(NULL, NULL, CFSTR("NVMTLVramAt:p%lu"), (unsigned long)plane); }
+static CFStringRef nvmtl_vram_tag_key(NSUInteger plane)
+{
+    /* WindowServer overwhelmingly publishes the first four IOSurface planes.  CFSTR objects are immortal, so retaining
+       one avoids a formatted CFString allocation while preserving the Create-rule ownership expected by every caller. */
+    static const CFStringRef common[] = {
+        CFSTR("NVMTLVramAt:p0"), CFSTR("NVMTLVramAt:p1"),
+        CFSTR("NVMTLVramAt:p2"), CFSTR("NVMTLVramAt:p3")
+    };
+    if (plane < sizeof common / sizeof common[0]) return (CFStringRef)CFRetain(common[plane]);
+    return CFStringCreateWithFormat(NULL, NULL, CFSTR("NVMTLVramAt:p%lu"), (unsigned long)plane);
+}
 static int nvmtl_vram_tag_current(IOSurfaceRef surf, NSUInteger plane, uint32_t seed)
 {
     CFStringRef k = nvmtl_vram_tag_key(plane); CFTypeRef v = IOSurfaceCopyValue(surf, k); CFRelease(k);
@@ -1983,6 +1993,9 @@ static void nvmtl_log_compute_descriptor(MTLComputePipelineDescriptor *d) {
 
 - (id<MTLSamplerState>)newSamplerStateWithDescriptor:(MTLSamplerDescriptor *)sd {
     if (nvmtl_vk_init()) return nil;
+    // The backend interns immutable VkSampler handles. Keep each Metal wrapper independent: its label,
+    // pixel-coordinate metadata and lazily assigned resource ID belong to this caller. Caching wrappers
+    // also keeps them alive after callers release them and can create a cycle if they retain the device.
     NVMTLSamplerState *s = [NVMTLSamplerState new];
     s->_label = [sd.label copy];
     if (!sd.normalizedCoordinates) {
