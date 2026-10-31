@@ -36,6 +36,15 @@ check. See [Intel panel setup](INTEL-PANEL.md).
 
 ## Capture import reuse and planar GPU copies
 
+Preserve the Photo Booth follow-up to upstream PR #433: request an actual
+storage view before importing eligible non-framebuffer-only app drawables.
+If a linear alias drops requested storage usage, release it and use the private
+fallback; never advertise a nonexistent writable view. Keep WindowServer's
+requested usage unchanged. Also retain Photo Booth's preview-only orientation
+adapter, gated by process/bundle identity and actual NVMTL CAMetalLayer
+drawables. Do not disable Zink, change camera buffers/saved photos, or globally
+invert Core Image/Metal coordinates. See [validation and scope](PHOTOBOOTH-PREVIEW.md).
+
 Preserve the installer/uninstaller permanent-path repair: recover obsolete
 temporary collection references only through an unambiguous installed bundle
 ID/version match. Published removal collections must use permanent `-p` paths,
