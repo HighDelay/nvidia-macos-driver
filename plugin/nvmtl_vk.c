@@ -1941,6 +1941,15 @@ int nvmtl_vk_image_create_typed(uint32_t w, uint32_t h, uint32_t vkfmt, uint32_t
     else { nvmtl_commit_image(&pending); *out = pending; }
     return result;
 }
+// The a8 flag of a pixel format selects a fixed swizzle of its view: 1 = A8Unorm (alpha in the red lane), 2 = Apple's private
+// ARGB8 format 84 (Apple's GL asks for it for GL_BGRA + GL_UNSIGNED_INT_8_8_8_8 uploads: bytes A,R,G,B, stored as RGBA8,
+// so R<-G, G<-B, B<-A, A<-R). 0 = identity.
+static VkComponentMapping nvmtl_a8_mapping(int a8)
+{
+    if (a8 == 1) return (VkComponentMapping){ VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_R };
+    if (a8 == 2) return (VkComponentMapping){ VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A, VK_COMPONENT_SWIZZLE_R };
+    return (VkComponentMapping){ 0, 0, 0, 0 };
+}
 static int nvmtl_vk_image_create_typed_lifetime_body(uint32_t w, uint32_t h, uint32_t vkfmt, uint32_t bpp, int a8, uint32_t mips, int storage, uint32_t mtl_type, uint32_t layers, nvk_image *out)
 {
     if (!layers || (mtl_type < 2 && h != 1) || mtl_type == 4 || mtl_type > 7
@@ -1964,8 +1973,7 @@ static int nvmtl_vk_image_create_typed_lifetime_body(uint32_t w, uint32_t h, uin
     VKCK(nvmtl_alloc_opaque_image_mem(&mr, &out->mem, &out->sysmem, "colour"), "vkAllocateMemory(image)");
     out->alloc = mr.size;
     VKCK(pvkBindImageMemory(g_dev, out->img, out->mem, 0), "vkBindImageMemory");
-    VkComponentMapping swz = a8 ? (VkComponentMapping){ VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_R }
-                                : (VkComponentMapping){ 0, 0, 0, 0 };
+    VkComponentMapping swz = nvmtl_a8_mapping(a8);
     VkImageViewType viewType = mtl_type == 0 ? VK_IMAGE_VIEW_TYPE_1D : mtl_type == 1 ? VK_IMAGE_VIEW_TYPE_1D_ARRAY : mtl_type == 3 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
                              : mtl_type == 5 ? VK_IMAGE_VIEW_TYPE_CUBE : mtl_type == 6 ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY : mtl_type == 7 ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D;
     VkImageViewCreateInfo vci = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, NULL, 0, out->img, viewType,
@@ -2142,7 +2150,21 @@ static int nvmtl_spirv_bands_ok(const void *p, size_t n, const char *what)
     free(heap);
     return ok;
 }
-static int nvmtl_spirv_bmask(const void *p, size_t n, uint64_t out[4])
+static int nvmtl_spirv_bmask_x(const void *p, size_t n, uint64_t out[4], int skip_fetch);
+static int nvmtl_spirv_bmask(const void *p, size_t n, uint64_t out[4]) { return nvmtl_spirv_bmask_x(p, n, out, 0); }
+// NVMTL_DESC_MASK (on by default, =0 off): pipelines use the masks that also leave the framebuffer-fetch set out
+// (skip_fetch below). With the set counted, a pipeline with framebuffer fetch had no mask, and every draw of it wrote
+// all ~180 descriptors: CoreAnimation's pipelines use framebuffer fetch, so WindowServer wrote 2.2 million descriptors
+// a second (~12k sets of ~180) where ~6 per set are needed.
+static int nvmtl_desc_mask_on(void)
+{
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("NVMTL_DESC_MASK"); on = !(e && e[0] == '0'); nvlog("descriptor masks without the framebuffer-fetch set %s (NVMTL_DESC_MASK=%s)", on ? "on" : "off", e ? e : "unset"); }
+    return on;
+}
+// skip_fetch: the framebuffer-fetch set (3: [[color(n)]] at binding 192+n, bound on its own) is left out like the heap.
+// Counted, its binding 192 is no stage binding and voided the whole mask.
+static int nvmtl_spirv_bmask_x(const void *p, size_t n, uint64_t out[4], int skip_fetch)
 {
     const uint32_t *w = (const uint32_t *)p; size_t nw = n / 4;
     memset(out, 0, 4 * sizeof *out);
@@ -2155,7 +2177,7 @@ static int nvmtl_spirv_bmask(const void *p, size_t n, uint64_t out[4])
     for (size_t i = 5; i < nw; ) {
         uint32_t wc = w[i] >> 16, op = w[i] & 0xffffu;
         if (!wc || i + wc > nw) { free(heap); return 0; }
-        if (op == 71 && wc == 4 && w[i + 2] == 34 && w[i + 3] == 2 && w[i + 1] < bound) heap[w[i + 1]] = 1;
+        if (op == 71 && wc == 4 && w[i + 2] == 34 && (w[i + 3] == 2 || (skip_fetch && w[i + 3] == 3)) && w[i + 1] < bound) heap[w[i + 1]] = 1;
         i += wc;
     }
     int ok = 1;
@@ -2822,7 +2844,7 @@ static int nvmtl_keep_page_push(nvmtl_address_page *p)
 #define NVMTL_WSEQ_LOST 0xFFFFFFFEu
 static nvk_buffer g_wit; static int g_wit_state;
 static uint32_t g_wit_seq;
-static uint64_t g_wit_ok, g_wit_waited, g_wit_leak, g_wit_blind, g_wit_ctl_run, g_wit_ctl_fired, g_wit_lost;
+static uint64_t g_wit_ok, g_wit_waited, g_wit_leak, g_wit_blind, g_wit_ctl_run, g_wit_ctl_fired, g_wit_lost, g_wit_lapped;
 static int nvmtl_wit_ready(void)
 {
     int st = __atomic_load_n(&g_wit_state, __ATOMIC_ACQUIRE);
@@ -2872,6 +2894,15 @@ static int nvmtl_keep_verdict(uint32_t s)
     if (s == NVMTL_WSEQ_LOST) return -1;
     if (g_state != 1 || g_wit_state <= 0) return -1;
     if (nvmtl_wit_read(s) == s) { __atomic_add_fetch(&g_wit_ok, 1, __ATOMIC_RELAXED); return 1; }
+    // A later lap of the same slot: a command buffer submitted NVMTL_WIT_SLOTS (or a multiple) after this one wrote it, on
+    // the same in-order queue, so this one finished long ago. Without this, a verdict asked that late waited the full
+    // NVMTL_WIT_WAIT_MS below and counted the pool as lost, and after NVMTL_WIT_LOST_MAX of them pool reuse was off for
+    // the whole process (WindowServer then made RM mappings for every command buffer and ran at ~12 fps).
+    { const uint32_t v = nvmtl_wit_read(s), d = v - s;
+      if (v && v < NVMTL_WSEQ_LOST && d && d < 0x80000000u && d % NVMTL_WIT_SLOTS == 0) {
+          const unsigned long long n = __atomic_add_fetch(&g_wit_lapped, 1, __ATOMIC_RELAXED);
+          if (n == 1 || (n & 0xFF) == 0) nvlog("vk: keep witness %u checked after its slot was reused by %u (%llu so far): finished, not lost", s, v, n);
+          return 1; } }
     static long wait_ms = -1; if (wait_ms < 0) { const char *e = getenv("NVMTL_WIT_WAIT_MS"); wait_ms = e ? atol(e) : 1000; }
     const uint64_t w0 = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
     for (;;) {
@@ -3195,7 +3226,12 @@ static VkDescriptorSet nvmtl_snapshot_set_c(nvk_cmdbuf *c, uint32_t which, const
         return nvmtl_snapshot_set_md(c, which, p->stex_hi[which], p->gmask_ok ? p->gmask[which] : NULL,
             p->tbany ? p->tbm[which] : NULL, VK_NULL_HANDLE, NULL, uniform);
     const uint64_t all[4] = { ~0ull, ~0ull, ~0ull, ~0ull };
-    const uint64_t *pm = p->bmask_ok ? p->bmask : (p->gmask_ok && which < 2) ? p->gmask[which] : all;
+    // The masks without the framebuffer-fetch set when they exist; otherwise the masks that count it, which are a
+    // superset and so always safe. Falling straight to "all" would write every descriptor on every draw of a pipeline
+    // that has only the older mask, the per-draw cost these masks exist to remove.
+    const int m2 = nvmtl_desc_mask_on();
+    const uint64_t *pm = (m2 && p->bmask2_ok) ? p->bmask2 : (m2 && p->gmask2_ok && which < 2) ? p->gmask2[which]
+                       : p->bmask_ok ? p->bmask : (p->gmask_ok && which < 2) ? p->gmask[which] : all;
     uint32_t hi = p->stex_hi[which];
     // A texture binding holds an image or, for a shader that reads a texel buffer there, a texel buffer (the layout's
     // descriptors are mutable). The last set can be bound again, or copied from, only by a pipeline that reads the same
@@ -3640,7 +3676,10 @@ static int nvmtl_vk_depth_create_full_lifetime_body(uint32_t w, uint32_t h, uint
     if (!mips) mips = 1;
     if (mtl_type == 5 && layers != 6) layers = 6;
     const int cube = mtl_type == 5 || mtl_type == 6;
-    memset(out, 0, sizeof *out); out->w = w; out->h = h; out->fmt = vkfmt; out->bpp = 4; out->samples = samples > 1 ? samples : 1;
+    memset(out, 0, sizeof *out); out->w = w; out->h = h; out->fmt = vkfmt; out->samples = samples > 1 ? samples : 1;
+    /* bytes per texel of a buffer copy of this aspect: Depth16 2, Stencil8 1, the 32-bit depths (and D24, packed in 32 bits) 4.
+     * WAS: 4 for all, so a buffer upload to a Depth16 texture had its 8-byte rows refused (Dome Keeper's 4x4 Depth16) */
+    out->bpp = vkfmt == VK_FORMAT_D16_UNORM ? 2 : vkfmt == VK_FORMAT_S8_UINT ? 1 : 4;
     out->mtl_type = mtl_type == 3 || cube || mtl_type == 8 ? mtl_type : (samples > 1 ? 4 : 2); out->layers = layers; out->mips = mips;
     VkImageCreateInfo ici = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0, VK_IMAGE_TYPE_2D,
         (VkFormat)vkfmt, { w, h, 1 }, mips, layers, (VkSampleCountFlagBits)out->samples, VK_IMAGE_TILING_OPTIMAL,
@@ -4477,6 +4516,7 @@ static int nvmtl_vk_pipeline_create_impl_lifetime_body(const void *vs, size_t vn
 
     if (!nvmtl_spirv_ok(vs, vn, "vertex module") || !nvmtl_spirv_ok(fs, fn, "fragment module")) return -1;
     if (!td) out->gmask_ok = (uint32_t)(nvmtl_spirv_bmask(vs, vn, out->gmask[0]) && nvmtl_spirv_bmask(fs, fn, out->gmask[1]));
+    if (!td) out->gmask2_ok = (uint32_t)(nvmtl_spirv_bmask_x(vs, vn, out->gmask2[0], 1) && nvmtl_spirv_bmask_x(fs, fn, out->gmask2[1], 1));
     VkShaderModuleCreateInfo vsm = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, vn, (const uint32_t *)vs };
     uint32_t *fcopy = (uint32_t *)malloc(fn);
     if (!fcopy) { nvlog("vk: out of memory copying the fragment module"); return -1; }
@@ -4686,6 +4726,7 @@ static int nvmtl_vk_compute_pipeline_create_g_lifetime_body(const void *cs, size
     out->tbany = (out->tbm[0][0] | out->tbm[0][1] | out->tbm[0][2] | out->tbm[0][3]) != 0;
     out->lin = nvmtl_spirv_has_specid(cs, n / 4, 3);
     out->bmask_ok = (uint32_t)nvmtl_spirv_bmask(cs, n, out->bmask);
+    out->bmask2_ok = (uint32_t)nvmtl_spirv_bmask_x(cs, n, out->bmask2, 1);
     VkShaderModuleCreateInfo smi = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, n, (const uint32_t *)cs };
     VkShaderModule mod = VK_NULL_HANDLE;
     VKCK(pvkCreateShaderModule(g_dev, &smi, NULL, &mod), "vkCreateShaderModule(compute)");
@@ -5576,10 +5617,12 @@ int nvmtl_vk_image_view_create_range_swz(nvk_image *img, uint32_t vkfmt, int a8,
     pvkDestroyImageView(g_dev, (VkImageView)v, NULL);
     static const VkComponentSwizzle a8map[6] = { VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_ZERO,
                                                  VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_R };
+    static const VkComponentSwizzle argbmap[6] = { VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_G,
+                                                   VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A, VK_COMPONENT_SWIZZLE_R };   // a8 == 2: ARGB8
     VkComponentSwizzle m[4];
     for (int i = 0; i < 4; i++) {
         uint8_t s = mtl_swz[i] <= 5 ? mtl_swz[i] : (uint8_t)(2 + i);
-        m[i] = a8 ? a8map[s] : (VkComponentSwizzle)(s + 1);
+        m[i] = a8 == 1 ? a8map[s] : a8 == 2 ? argbmap[s] : (VkComponentSwizzle)(s + 1);
     }
     const uint32_t mips = img->mips ? img->mips : 1, layers = img->layers ? img->layers : 1;
     if (!levelCount) levelCount = mips - baseLevel;
@@ -6350,8 +6393,7 @@ int nvmtl_vk_image_reback(nvk_image *i, int to_sysmem, int a8)
     VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr.size, (uint32_t)mt };
     if (pvkAllocateMemory(g_dev, &mai, NULL, &mem) != VK_SUCCESS) { pvkDestroyImage(g_dev, img, NULL); if (!to_sysmem) g_res1_refused++; return to_sysmem ? -1 : 1; }
     if (pvkBindImageMemory(g_dev, img, mem, 0) != VK_SUCCESS) { pvkFreeMemory(g_dev, mem, NULL); pvkDestroyImage(g_dev, img, NULL); return -1; }
-    VkComponentMapping swz = a8 ? (VkComponentMapping){ VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_R }
-                                : (VkComponentMapping){ 0, 0, 0, 0 };
+    VkComponentMapping swz = nvmtl_a8_mapping(a8);
     VkImageViewType viewType = t == 0 ? VK_IMAGE_VIEW_TYPE_1D : t == 1 ? VK_IMAGE_VIEW_TYPE_1D_ARRAY : t == 3 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
                              : t == 5 ? VK_IMAGE_VIEW_TYPE_CUBE : t == 6 ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY : t == 7 ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D;
     VkImageViewCreateInfo vci = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, NULL, 0, img, viewType,
@@ -6428,8 +6470,7 @@ int nvmtl_vk_image_migrate(nvk_image *i, int to_sysmem, int a8, nvk_image *old_o
     VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr.size, (uint32_t)mt };
     if (pvkAllocateMemory(g_dev, &mai, NULL, &mem) != VK_SUCCESS) { pvkDestroyImage(g_dev, img, NULL); return to_sysmem ? -1 : 1; }
     if (pvkBindImageMemory(g_dev, img, mem, 0) != VK_SUCCESS) goto fail;
-    { VkComponentMapping swz = a8 ? (VkComponentMapping){ VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_R }
-                                  : (VkComponentMapping){ 0, 0, 0, 0 };
+    { VkComponentMapping swz = nvmtl_a8_mapping(a8);
       VkImageViewType vt = t == 0 ? VK_IMAGE_VIEW_TYPE_1D : t == 1 ? VK_IMAGE_VIEW_TYPE_1D_ARRAY : t == 3 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
                          : t == 5 ? VK_IMAGE_VIEW_TYPE_CUBE : t == 6 ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY : t == 7 ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D;
       VkImageViewCreateInfo vci = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, NULL, 0, img, vt, (VkFormat)i->fmt, swz,
@@ -6654,6 +6695,15 @@ static int nvmtl_host_page_span(void **base, size_t *bytes, size_t bpp, size_t r
     *base = (void *)(b - at); *bytes = span; *offset = at;
     return 0;
 }
+// NVMTL_SURFIN_ORDERED (on by default, =0 off): the surface-in copy is ordered after earlier GPU reads of the image. Its
+// layout transition started from top-of-pipe with no source access, so a composite still sampling the previous frame
+// was not waited for (write-after-read: a possible torn frame).
+static int nvmtl_surfin_ordered_on(void)
+{
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("NVMTL_SURFIN_ORDERED"); on = !(e && e[0] == '0'); nvlog("ordered surface-in %s (NVMTL_SURFIN_ORDERED=%s)", on ? "on" : "off", e ? e : "unset"); }
+    return on;
+}
 int nvmtl_vk_image_write_host(nvk_queue *q, nvk_image *img, void *base, size_t row_bytes, size_t bytes, nvk_buffer *cache)
 {
     const size_t bpp = img->bpp ? img->bpp : 4;
@@ -6665,10 +6715,10 @@ int nvmtl_vk_image_write_host(nvk_queue *q, nvk_image *img, void *base, size_t r
     nvk_cmdbuf c;
     if (nvmtl_vk_cmd_begin(q, &c)) { nvmtl_host_pages_done(cache, hp); return -1; }
     VkImageSubresourceRange range = { nvmtl_barrier_aspect(img), 0, 1, 0, 1 };
-    VkImageMemoryBarrier toDst = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+    VkImageMemoryBarrier toDst = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, nvmtl_surfin_ordered_on() ? (VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_SHADER_READ_BIT) : 0, VK_ACCESS_TRANSFER_WRITE_BIT,
         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, (VkImage)img->img, range };
-    pvkCmdPipelineBarrier(c.cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &toDst);
+    pvkCmdPipelineBarrier(c.cb, nvmtl_surfin_ordered_on() ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &toDst);
     VkBufferImageCopy bic = { (VkDeviceSize)at, (uint32_t)(row_bytes / bpp), 0, { nvmtl_copy_aspect(img), 0, 0, 1 }, { 0, 0, 0 }, { img->w, img->h, 1 } };
     pvkCmdCopyBufferToImage(c.cb, (VkBuffer)hb.buf, (VkImage)img->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
     VkImageMemoryBarrier toRead = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL,
@@ -6720,10 +6770,10 @@ int nvmtl_vk_image_write(nvk_queue *q, nvk_image *img, const void *src, size_t r
     nvk_cmdbuf *const c = &sl->cb;
     if (nvmtl_vk_cmd_begin(q, c)) return -1;
     VkImageSubresourceRange range = { nvmtl_barrier_aspect(img), 0, 1, 0, 1 };
-    VkImageMemoryBarrier toDst = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+    VkImageMemoryBarrier toDst = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, nvmtl_surfin_ordered_on() ? (VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_SHADER_READ_BIT) : 0, VK_ACCESS_TRANSFER_WRITE_BIT,
         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, (VkImage)img->img, range };
-    pvkCmdPipelineBarrier(c->cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &toDst);
+    pvkCmdPipelineBarrier(c->cb, nvmtl_surfin_ordered_on() ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &toDst);
     VkBufferImageCopy bic = { 0, 0, 0, { nvmtl_copy_aspect(img), 0, 0, 1 }, { 0, 0, 0 }, { img->w, img->h, 1 } };
     pvkCmdCopyBufferToImage(c->cb, (VkBuffer)sl->buf.buf, (VkImage)img->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
     VkImageMemoryBarrier toRead = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL,
@@ -7229,8 +7279,7 @@ int nvmtl_vk_image_view_create_ex(nvk_image *img, uint32_t vkfmt, int a8, uint32
         return -1;
     }
     VkFormat fmt = (VkFormat)vkfmt;
-    VkComponentMapping swz = a8 ? (VkComponentMapping){ VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_R }
-                                : (VkComponentMapping){ 0, 0, 0, 0 };
+    VkComponentMapping swz = nvmtl_a8_mapping(a8);
     VkImageViewCreateInfo vci = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, NULL, 0, (VkImage)img->img,
         nvmtl_vk_view_type_of(img), fmt, swz, { VK_IMAGE_ASPECT_COLOR_BIT, baseLevel, levelCount, 0, nvmtl_vk_view_layers_of(img) } };
     VkImageViewUsageCreateInfo uci;
@@ -8068,8 +8117,7 @@ static int nvmtl_vk_image_create_buffer_alias_lifetime_body(uint32_t w, uint32_t
               (unsigned long long)mr.size, (unsigned long long)(mr.size - (b->size - offset)), b->size, offset);
     VKCK(pvkBindImageMemory(g_dev, (VkImage)out->img, (VkDeviceMemory)b->mem, at), "vkBindImageMemory(buffer texture)");
     out->mem = b->mem; out->placed = 1; out->alloc = 0;
-    VkComponentMapping swz = a8 ? (VkComponentMapping){ VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_R }
-                                : (VkComponentMapping){ 0, 0, 0, 0 };
+    VkComponentMapping swz = nvmtl_a8_mapping(a8);
     VkImageViewCreateInfo vci = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, NULL, 0, out->img, VK_IMAGE_VIEW_TYPE_2D,
         (VkFormat)vkfmt, swz, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
     VKCK(nvmtl_opaque_CreateImageView(g_dev, &vci, NULL, &out->view), "vkCreateImageView(buffer texture)");
@@ -8263,8 +8311,7 @@ static int nvmtl_vk_image_create_typed_placed_lifetime_body(uint32_t w, uint32_t
     if (placed_ok(&mr, heap, offset, "placed image")) { pvkDestroyImage(g_dev, (VkImage)out->img, NULL); memset(out, 0, sizeof *out); return -1; }
     VKCK(pvkBindImageMemory(g_dev, out->img, (VkDeviceMemory)heap->mem, offset), "vkBindImageMemory(placed)");
     out->mem = heap->mem; out->placed = 1; out->alloc = 0;
-    VkComponentMapping swz = a8 ? (VkComponentMapping){ VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_R }
-                                : (VkComponentMapping){ 0, 0, 0, 0 };
+    VkComponentMapping swz = nvmtl_a8_mapping(a8);
     VkImageViewType viewType = mtl_type == 0 ? VK_IMAGE_VIEW_TYPE_1D : mtl_type == 1 ? VK_IMAGE_VIEW_TYPE_1D_ARRAY : mtl_type == 3 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
                              : mtl_type == 5 ? VK_IMAGE_VIEW_TYPE_CUBE : mtl_type == 6 ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY : mtl_type == 7 ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D;
     VkImageViewCreateInfo vci = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, NULL, 0, out->img, viewType,
@@ -8399,6 +8446,25 @@ int nvmtl_vk_cmd_copy_image_sub3(nvk_cmdbuf *c, nvk_image *src, uint32_t sl, uin
     }
     const uint32_t sw = nvmtl_lvl(src->w, sl), sh = nvmtl_lvl(src->h, sl);
     const uint32_t dw = nvmtl_lvl(dst->w, dl), dh = nvmtl_lvl(dst->h, dl);
+    {   /* Metal sizes a block-compressed copy in whole blocks: the 1x1 and 2x2 mips of a BC texture are copied as 4x4
+         * (Unity's mip chains, Cult of the Lamb's font atlases). Vulkan wants the extent to end at the mip's edge instead;
+         * clamp a region that runs past the edge by less than one block. WAS: "region outside selected mip extent". */
+        uint32_t bw = 1, bh = 1, bb = 0;
+        if (nvmtl_vk_format_block(src->fmt, &bw, &bh, &bb) && (bw > 1 || bh > 1)) {
+            const uint32_t rw = (sw + bw - 1) / bw * bw, rh = (sh + bh - 1) / bh * bh;
+            const uint32_t rdw = (dw + bw - 1) / bw * bw, rdh = (dh + bh - 1) / bh * bh;
+            if (sx < sw && dx < dw && w <= rw - sx && w <= rdw - dx) { if (w > sw - sx) w = sw - sx; if (w > dw - dx) w = dw - dx; }
+            if (sy < sh && dy < dh && h <= rh - sy && h <= rdh - dy) { if (h > sh - sy) h = sh - sy; if (h > dh - dy) h = dh - dy; }
+            // Cropping at the destination edge must not split a source block. Offsets stay block-aligned;
+            // a partial source block is valid only at the source mip's edge (vkCmdCopyImage-01728/01729).
+            if (sx % bw || dx % bw || sy % bh || dy % bh
+                || (w % bw && (uint64_t)sx + w != sw)
+                || (h % bh && (uint64_t)sy + h != sh)) {
+                nvlog("copy_image_sub: compressed region is not block-aligned or at the source mip edge");
+                return -1;
+            }
+        }
+    }
     if (sx > sw || w > sw - sx || sy > sh || h > sh - sy
         || dx > dw || w > dw - dx || dy > dh || h > dh - dy) {
         nvlog("copy_image_sub: region outside selected mip extent");
@@ -8500,8 +8566,7 @@ int nvmtl_vk_image_view_create_range_aspect(nvk_image *img, uint32_t vkfmt, int 
         case 7: vt = VK_IMAGE_VIEW_TYPE_3D; if (img->mtl_type != 7) { nvlog("image_view_create(range): a 3D view of a non-3D image"); return -1; } layerCount = 1; break;
         default: nvlog("image_view_create(range): view textureType %u is not carried", mtl_view_type); return -1;
     }
-    VkComponentMapping swz = a8 ? (VkComponentMapping){ VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_R }
-                                : (VkComponentMapping){ 0, 0, 0, 0 };
+    VkComponentMapping swz = nvmtl_a8_mapping(a8);
     VkImageViewCreateInfo vci = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, NULL, 0, (VkImage)img->img, vt, (VkFormat)vkfmt, swz,
         { (VkImageAspectFlags)aspect, baseLevel, levelCount, baseLayer, layerCount } };
     VkImageViewUsageCreateInfo uci;

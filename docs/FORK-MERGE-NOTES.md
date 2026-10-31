@@ -16,8 +16,8 @@ Before each merge:
 4. Build the affected components and check their behavior, resource lifetime and synchronization.
    Record which fork changes upstream now covers, what remains local and the validation limits.
 
-The current upstream base is **2.6.4 at `f95f4d2`**, from `upstream/main`, integrated on
-2026-10-29. The preceding base was 2.6.3 at `190a4d4`, integrated on 2026-10-28.
+The current upstream base is **2.6.5 at `ceba63c`**, from `upstream/main`, integrated on
+2026-10-31. The preceding 2.6.4 base was `f95f4d2`. The preceding base was 2.6.3 at `190a4d4`, integrated on 2026-10-28.
 
 ## Capture import reuse and planar GPU copies
 
@@ -109,6 +109,30 @@ Preserve native GLD rollback, build provenance and external-kext preservation du
 both preflight and live kernel-collection builds. Do not replace permanent
 external kext paths with disposable preflight paths. See
 [Zink integration review](ZINK-PR2-REVIEW.md) for the review and validation limits.
+
+## Upstream 2.6.5 integration
+
+Five files conflicted: CHANGELOG, NVMTLDevice, NVMTLObjects, nvmtl_vk and the
+ANGLE regression fixture. Retain both changelog histories and the fork's all-app
+ANGLE default: upstream's loaded-library detection is unnecessary for that
+broader policy. Retain the richer AIR texture component/access reflection already
+in this fork instead of duplicating upstream's narrower implementation.
+
+Combine upstream's ordered surface upload barrier with the fork's checked
+page-span calculation and nonzero plane offset. Preserve released-import reuse,
+VRAM publication tags, pending-write tracking and uncertain-work quarantine.
+Take upstream's two-plane private-image schedule-after-publication default,
+serial presentation queue, completion-witness reuse, descriptor-mask fallback,
+ARGB8 sampling (but rejected colour attachments), compressed mip copy checks,
+array reflection and shader translation improvements. These affect Metal and
+OpenGL-over-Metal clients; native Zink/Minecraft/Wine renderer sources and all
+kernel sources are unchanged. Preserve the qualified small-BAR Zink repair.
+
+Build and test records are under `out/upstream-2.6.5-review/`. The merged plugin
+and translator require new binaries; reuse unchanged kernel, native runtime,
+DXVK/vkd3d and CGL components only with verified prior-release hashes. Previous
+Sequoia Minecraft confirmation qualifies the unchanged Zink library, not a new
+boot or capture test of the 2.6.5 plugin.
 
 ## Upstream 2.6.4 integration
 

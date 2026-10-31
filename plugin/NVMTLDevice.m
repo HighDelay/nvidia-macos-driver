@@ -758,6 +758,10 @@ static int nvmtl_pixfmt(MTLPixelFormat f, uint32_t *vk, uint32_t *bpp, int *a8)
     *a8 = 0;
     switch (f) {
     case MTLPixelFormatA8Unorm:          *vk = 9  ;               *bpp = 1;  *a8 = 1; return 0;
+    // Apple's private ARGB8 format: AppleMetalOpenGLRenderer asks for it when a GL_RGBA8 texture is uploaded as GL_BGRA +
+    // GL_UNSIGNED_INT_8_8_8_8 (bytes A,R,G,B; Unity 5's ARGB32 textures). Stored as RGBA8, the view swizzle reorders it
+    // (a8 = 2). WAS nil, so the GL texture was "unloadable" and sampled as zero: Homeworld: Deserts of Kharak's UI sprites.
+    case (MTLPixelFormat)84:             *vk = 37 ;         *bpp = 4;  *a8 = 2; return 0;
     case MTLPixelFormatR8Unorm:          *vk = 9  ;               *bpp = 1;  return 0;
     case MTLPixelFormatR8Unorm_sRGB:     *vk = 15 ;                *bpp = 1;  return 0;
     case MTLPixelFormatR8Snorm:          *vk = 10 ;               *bpp = 1;  return 0;
@@ -1134,6 +1138,21 @@ static int nvmtl_surface_image_create(NVMTLTexture *t, IOSurfaceRef surf, NSUInt
     return rc;
 }
 
+// A CAMetalLayer drawable with framebufferOnly=NO is, on real Metal, usable as a render target AND a compute/Core Image
+// destination. QuartzCore hands this driver a descriptor whose usage is only ShaderRead for it, so Core Image refuses the
+// texture ("texture usage must include MTLTextureUsageShaderWrite") and Photo Booth's preview stays black. The surface's
+// image is already writable whenever its format allows (see nvmtl_surface_image_create), so say so.
+// WindowServer keeps the usage it asked for: it wraps hundreds of surfaces a second, none of them Core Image targets.
+static NSUInteger nvmtl_surface_usage(NSUInteger usage, BOOL fbo, BOOL storage) {
+    static int ws = -1;
+    if (ws < 0) { const char *me = getprogname(); ws = me && !strcmp(me, "WindowServer"); }
+    if (!fbo && !ws) {
+        usage |= MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
+        if (storage) usage |= MTLTextureUsageShaderWrite;
+    }
+    return usage;
+}
+
 static char nvmtl_surface_cache_key;
 - (id<MTLTexture>)newTextureWithDescriptor:(MTLTextureDescriptor *)d iosurface:(IOSurfaceRef)surf plane:(NSUInteger)plane {
     @synchronized(self) {
@@ -1164,7 +1183,7 @@ static char nvmtl_surface_cache_key;
     if (backing && !backing->_vramOn) {
         NVMTLTexture *alias = (NVMTLTexture *)[backing newTextureViewWithPixelFormat:d.pixelFormat];
         if (alias) {
-            alias->_viewParent = nil; alias->_usage = d.usage; alias->_ropt = t->_ropt; alias->_fbo = t->_fbo;
+            alias->_viewParent = nil; alias->_usage = nvmtl_surface_usage(d.usage, t->_fbo, alias->_stex); alias->_ropt = t->_ropt; alias->_fbo = t->_fbo;
             nvmtl_texture_desc_swizzle(alias, d);
             return alias;
         }
@@ -1176,7 +1195,7 @@ static char nvmtl_surface_cache_key;
     t->_plane = plane;
     t->_fmt = d.pixelFormat;
     t->_stex = t->_i.storage != 0;
-    t->_usage = d.usage;
+    t->_usage = nvmtl_surface_usage(d.usage, t->_fbo, t->_stex);
     nvmtl_texture_desc_swizzle(t, d);
     if (key && !t->_vramOn) [cache setObject:t forKey:key];
     nvlog("newTextureWithDescriptor:iosurface:%p plane:%lu -> %p (%zux%zu fmt %lu)",
@@ -1669,6 +1688,10 @@ void nvmtl_gl_tag_reflection(id refl, MTLRenderPipelineDescriptor *d);
         uint32_t svk = 0, sbpp = 0; int sa8 = 0;
         if (nvmtl_pixfmt(ca.pixelFormat, &svk, &sbpp, &sa8))
             return nvmtl_fail(err, [NSString stringWithFormat:@"pipeline: colour attachment %u pixel format %lu not carried by this driver", i, (unsigned long)ca.pixelFormat]);
+        // ARGB8 (84) is sampled through a reordering view swizzle, which a colour attachment does not get, and the A8
+        // remapping below would treat it as a one-channel target. Refused, as it was before the format was carried.
+        if (sa8 == 2)
+            return nvmtl_fail(err, [NSString stringWithFormat:@"pipeline: colour attachment %u pixel format %lu (ARGB8) is not carried as a render target", i, (unsigned long)ca.pixelFormat]);
         if (nvmtl_blend_from(ca, noFrag, sa8, &rt.blend[i]))
             return nvmtl_fail(err, [NSString stringWithFormat:@"pipeline: colour attachment %u has a blend factor or operation this driver cannot translate (the reason is the preceding \"blend:\" log line)", i]);
         if (sa8) {
