@@ -25,6 +25,7 @@ void nvlog(const char *fmt, ...);
 #import <CommonCrypto/CommonDigest.h>
 #define NVMTL_AIR_OPT   "/Library/GPUBundles/nvmtl/air-opt"
 #include <unistd.h>
+#include <libproc.h>
 static inline const char *nvmtl_pick_ll(const char *staged, const char *dev) {
     return access(staged, R_OK) == 0 ? staged : dev;
 }
@@ -189,7 +190,18 @@ static _Atomic unsigned long gFcMemoHit, gFcLookups;
 // (or nvrm610.conf) runs the work on the caller again, for an A/B.
 static int nvmtl_cache_sync_io(void) {
     static int on = -1;
-    if (on < 0) { const char *e = getenv("NVMTL_CACHE_SYNC_IO"); on = (e && *e && *e != '0') ? 1 : 0; }
+    if (on < 0) {
+        const char *e = getenv("NVMTL_CACHE_SYNC_IO");
+        on = (e && *e && *e != '0') ? 1 : 0;
+        /* Parallels creates and tears down its graphics process while Metal
+         * reflection is still warming the cache. Keep Foundation file I/O on
+         * that process's caller thread so a queued block cannot outlive the
+         * driver objects that scheduled it (the async path is retained for
+         * ordinary long-lived Metal clients). */
+        char name[64] = {0};
+        proc_name(getpid(), name, sizeof name);
+        if (strstr(name, "prl_vm_app")) on = 1;
+    }
     return on;
 }
 static dispatch_queue_t gCacheIoQueue;
