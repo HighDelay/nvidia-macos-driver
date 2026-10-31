@@ -19,6 +19,21 @@ Before each merge:
 The current upstream base is **2.6.5 at `ceba63c`**, from `upstream/main`, integrated on
 2026-10-31. The preceding 2.6.4 base was `f95f4d2`. The preceding base was 2.6.3 at `190a4d4`, integrated on 2026-10-28.
 
+## Optional Intel laptop panel framebuffer
+
+The complete package builder compiles the real `NMIntelFB` into `Optional/`,
+with source/payload hashes. Keep the virtual variant out of release archives.
+The installer prompts with a default of No; do not infer opt-in from a spoofed
+MacBook model. Preserve an existing opt-in during upgrades, explicit
+`--intel-panel=yes|no`, selected-kext preflight, removal checks, backup/rollback,
+interrupted-install recovery and uninstall handling. A new noninteractive
+installation skips the kext unless explicitly selected.
+
+This is experimental firmware-mode framebuffer support. The accelerator's
+`debug.nvaccel_igpu` path remains disabled by default. Do not claim accelerated
+Intel-panel gameplay or laptop sleep/wake qualification from a kernel link
+check. See [Intel panel setup](INTEL-PANEL.md).
+
 ## Capture import reuse and planar GPU copies
 
 Preserve the installer/uninstaller permanent-path repair: recover obsolete

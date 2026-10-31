@@ -29,6 +29,10 @@ kernel collection. Do not also inject these kexts through `EFI/OC/Kexts`.
 `Verify.command` checks the complete package and runs GPU/CGL diagnostics.
 See the [package guide](docs/COMBINED-INSTALL.md).
 
+The installer offers experimental **Intel laptop panel support** (`NMIntelFB`),
+default **No**, for internal screens wired to an unsupported Intel GPU. Existing
+opt-ins survive updates. See [when to enable it](docs/INTEL-PANEL.md).
+
 ## 1401 Mac app
 
 Download the upstream [1401 Mac app](https://github.com/nullmoth/1401/releases),
